@@ -2,8 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Deja View connects to Macs on your local network to view and control their screens.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_rfb._tcp</string>

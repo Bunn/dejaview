@@ -1,4 +1,5 @@
 import SwiftUI
+import OSLog
 
 /// Sheet for creating or editing a saved machine.
 struct EditMachineView: View {
@@ -7,8 +8,13 @@ struct EditMachineView: View {
     let connectWithoutSaving: ((SavedMachine, String) -> Void)?
 
     @State private var machine: SavedMachine
+    @State private var name: String
+    @State private var host: String
+    @State private var username: String
     @State private var password: String
     @State private var portText: String
+
+    private let isNew: Bool
 
     init(store: MachineStore,
          machine: SavedMachine,
@@ -16,26 +22,26 @@ struct EditMachineView: View {
          connectWithoutSaving: ((SavedMachine, String) -> Void)? = nil) {
         self.store = store
         self.connectWithoutSaving = connectWithoutSaving
+        isNew = !store.contains(machine)
         _machine = State(initialValue: machine)
+        _name = State(initialValue: machine.name)
+        _host = State(initialValue: machine.host)
+        _username = State(initialValue: machine.username)
         _password = State(initialValue: password)
         _portText = State(initialValue: String(machine.port))
     }
 
-    private var isNew: Bool {
-        !store.contains(machine)
-    }
-
     private var canSubmit: Bool {
-        !machine.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Machine") {
-                    TextField("Name (optional)", text: $machine.name)
+                    TextField("Name (optional)", text: $name)
 
-                    TextField("Host or IP address", text: $machine.host)
+                    TextField("Host or IP address", text: $host)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
@@ -45,11 +51,9 @@ struct EditMachineView: View {
                 }
 
                 Section("Login") {
-                    TextField("Username (macOS login)", text: $machine.username)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                    CredentialTextField("Username (macOS login)", text: $username)
 
-                    SecureField("Password", text: $password)
+                    CredentialTextField("Password", text: $password, isSecure: true)
                 }
 
                 if isNew, connectWithoutSaving != nil {
@@ -90,26 +94,31 @@ struct EditMachineView: View {
     }
 
     private func save() {
-        machine = preparedMachine()
+        let prepared = preparedMachine()
+        AppLog.ui.info("Saving machine from editor; isNew=\(self.isNew, privacy: .public) host=\(prepared.host, privacy: .public):\(prepared.port, privacy: .public)")
 
         if isNew {
-            store.add(machine, password: password)
+            store.add(prepared, password: password)
         } else {
-            store.update(machine, password: password)
+            store.update(prepared, password: password)
         }
 
         dismiss()
     }
 
     private func connectNow() {
-        connectWithoutSaving?(preparedMachine(), password)
+        let prepared = preparedMachine()
+        AppLog.ui.info("Connecting without saving from editor to \(prepared.host, privacy: .public):\(prepared.port, privacy: .public)")
+        connectWithoutSaving?(prepared, password)
         dismiss()
     }
 
     private func preparedMachine() -> SavedMachine {
         var prepared = machine
-        prepared.host = prepared.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        prepared.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        prepared.host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         prepared.port = UInt16(portText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 5900
+        prepared.username = username.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if prepared.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             prepared.name = prepared.host

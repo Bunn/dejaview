@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import Security
 
 /// A saved connection. Metadata lives in UserDefaults; the password is
@@ -31,20 +32,26 @@ final class MachineStore: ObservableObject {
     }
 
     func add(_ machine: SavedMachine, password: String) {
+        AppLog.storage.info("Adding saved machine '\(machine.displayName, privacy: .public)' at \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
         machines.append(machine)
         persist()
         Keychain.setPassword(password, for: machine.id)
     }
 
     func update(_ machine: SavedMachine, password: String) {
-        guard let index = machines.firstIndex(where: { $0.id == machine.id }) else { return }
+        guard let index = machines.firstIndex(where: { $0.id == machine.id }) else {
+            AppLog.storage.warning("Attempted to update missing machine id=\(machine.id.uuidString, privacy: .public)")
+            return
+        }
 
+        AppLog.storage.info("Updating saved machine '\(machine.displayName, privacy: .public)' at \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
         machines[index] = machine
         persist()
         Keychain.setPassword(password, for: machine.id)
     }
 
     func delete(_ machine: SavedMachine) {
+        AppLog.storage.info("Deleting saved machine '\(machine.displayName, privacy: .public)'")
         machines.removeAll { $0.id == machine.id }
         persist()
         Keychain.deletePassword(for: machine.id)
@@ -55,24 +62,38 @@ final class MachineStore: ObservableObject {
     }
 
     func password(for machine: SavedMachine) -> String {
-        Keychain.password(for: machine.id) ?? ""
+        guard let password = Keychain.password(for: machine.id) else {
+            AppLog.storage.debug("No Keychain password found for '\(machine.displayName, privacy: .public)'")
+            return ""
+        }
+
+        return password
     }
 
     // MARK: - Persistence
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
-              let decoded = try? JSONDecoder().decode([SavedMachine].self, from: data) else {
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey) else {
+            AppLog.storage.info("No saved machines found in UserDefaults")
             return
         }
 
-        machines = decoded
+        do {
+            machines = try JSONDecoder().decode([SavedMachine].self, from: data)
+            AppLog.storage.info("Loaded \(self.machines.count, privacy: .public) saved machines")
+        } catch {
+            AppLog.storage.error("Failed to decode saved machines: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func persist() {
-        guard let data = try? JSONEncoder().encode(machines) else { return }
-
-        UserDefaults.standard.set(data, forKey: defaultsKey)
+        do {
+            let data = try JSONEncoder().encode(machines)
+            UserDefaults.standard.set(data, forKey: defaultsKey)
+            AppLog.storage.debug("Persisted \(self.machines.count, privacy: .public) saved machines")
+        } catch {
+            AppLog.storage.error("Failed to encode saved machines: \(error.localizedDescription, privacy: .public)")
+        }
     }
 }
 
@@ -94,7 +115,13 @@ private enum Keychain {
         query[kSecValueData as String] = Data(password.utf8)
         query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
-        SecItemAdd(query as CFDictionary, nil)
+        let status = SecItemAdd(query as CFDictionary, nil)
+
+        if status == errSecSuccess {
+            AppLog.storage.debug("Stored Keychain password for id=\(id.uuidString, privacy: .public)")
+        } else {
+            AppLog.storage.error("Failed to store Keychain password for id=\(id.uuidString, privacy: .public); status=\(status, privacy: .public)")
+        }
     }
 
     static func password(for id: UUID) -> String? {
@@ -104,8 +131,14 @@ private enum Keychain {
 
         var result: AnyObject?
 
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        guard status == errSecSuccess,
               let data = result as? Data else {
+            if status != errSecItemNotFound {
+                AppLog.storage.error("Failed to read Keychain password for id=\(id.uuidString, privacy: .public); status=\(status, privacy: .public)")
+            }
+
             return nil
         }
 
@@ -113,6 +146,12 @@ private enum Keychain {
     }
 
     static func deletePassword(for id: UUID) {
-        SecItemDelete(baseQuery(for: id) as CFDictionary)
+        let status = SecItemDelete(baseQuery(for: id) as CFDictionary)
+
+        if status == errSecSuccess || status == errSecItemNotFound {
+            AppLog.storage.debug("Deleted Keychain password for id=\(id.uuidString, privacy: .public); status=\(status, privacy: .public)")
+        } else {
+            AppLog.storage.error("Failed to delete Keychain password for id=\(id.uuidString, privacy: .public); status=\(status, privacy: .public)")
+        }
     }
 }

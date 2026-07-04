@@ -1,4 +1,5 @@
 import SwiftUI
+import OSLog
 
 struct ContentView: View {
     @StateObject private var session = VNCSession()
@@ -14,6 +15,8 @@ struct ContentView: View {
     @State private var editingPassword = ""
     @State private var pendingConnectionMachine: SavedMachine?
     @State private var pendingConnectionPassword = ""
+
+    private static let appleScreenSharingHelpURL = URL(string: "https://support.apple.com/guide/mac-help/turn-screen-sharing-on-or-off-mh11848/mac")!
 
     var body: some View {
         NavigationSplitView {
@@ -47,7 +50,10 @@ struct ContentView: View {
                             password: editingPassword,
                             connectWithoutSaving: queueDirectConnection)
         }
-        .onAppear { browser.start() }
+        .onAppear {
+            AppLog.ui.info("Connect view appeared; starting nearby Mac discovery")
+            browser.start()
+        }
     }
 
     // MARK: - Detail
@@ -158,19 +164,26 @@ struct ContentView: View {
     }
 
     private var scanningPanel: some View {
-        HStack(spacing: 14) {
-            ProgressView()
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 14) {
+                ProgressView()
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Looking for Macs")
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Looking for Macs")
+                        .font(.headline)
 
-                Text("Screen Sharing hosts appear here automatically.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    Text("Screen Sharing hosts appear here automatically.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
             }
 
-            Spacer()
+            Link(destination: Self.appleScreenSharingHelpURL) {
+                Label("Not seeing your Mac?", systemImage: "questionmark.circle")
+            }
+            .glassButtonStyle()
         }
         .padding(20)
         .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
@@ -231,13 +244,18 @@ struct ContentView: View {
     // MARK: - Actions
 
     private func addMachine() {
+        AppLog.ui.info("Opening New Machine sheet")
         editingPassword = ""
         editingMachine = SavedMachine(name: "", host: "", username: "")
     }
 
     private func addMachine(for service: DiscoveredService) {
-        guard let serviceHost = service.host, let servicePort = service.port else { return }
+        guard let serviceHost = service.host, let servicePort = service.port else {
+            AppLog.ui.warning("Ignored unresolved nearby service '\(service.name, privacy: .public)'")
+            return
+        }
 
+        AppLog.ui.info("Opening New Machine sheet from nearby service '\(service.name, privacy: .public)' at \(serviceHost, privacy: .public):\(servicePort, privacy: .public)")
         editingPassword = ""
         editingMachine = SavedMachine(name: service.name,
                                       host: serviceHost,
@@ -246,16 +264,19 @@ struct ContentView: View {
     }
 
     private func edit(_ machine: SavedMachine) {
+        AppLog.ui.info("Opening Edit Machine sheet for '\(machine.displayName, privacy: .public)'")
         editingPassword = store.password(for: machine)
         editingMachine = machine
     }
 
     private func refreshNearbyMacs() {
+        AppLog.ui.info("Refreshing nearby Mac discovery")
         browser.stop()
         browser.start()
     }
 
     private func queueDirectConnection(machine: SavedMachine, password: String) {
+        AppLog.ui.info("Queued direct connection without saving for \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
         pendingConnectionMachine = machine
         pendingConnectionPassword = password
     }
@@ -263,16 +284,19 @@ struct ContentView: View {
     private func connectPendingMachine() {
         guard let machine = pendingConnectionMachine else { return }
 
+        AppLog.ui.info("Starting pending direct connection to \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
         pendingConnectionMachine = nil
         connect(to: machine, password: pendingConnectionPassword)
         pendingConnectionPassword = ""
     }
 
     private func connect(to machine: SavedMachine) {
+        AppLog.ui.info("Starting saved machine connection to '\(machine.displayName, privacy: .public)'")
         connect(to: machine, password: store.password(for: machine))
     }
 
     private func connect(to machine: SavedMachine, password: String) {
+        AppLog.ui.info("Presenting session for \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
         session.connect(host: machine.host,
                         port: machine.port,
                         username: machine.username,

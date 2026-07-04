@@ -1,4 +1,5 @@
 import SwiftUI
+import OSLog
 
 /// Full-screen remote session with floating Liquid Glass controls.
 struct SessionView: View {
@@ -51,6 +52,7 @@ struct SessionView: View {
                     .foregroundStyle(.secondary)
 
                 Button("Cancel") {
+                    AppLog.ui.info("Connection cancel button tapped")
                     session.disconnect()
                     dismiss()
                 }
@@ -80,11 +82,13 @@ struct SessionView: View {
 
                 HStack(spacing: 12) {
                     Button("Close") {
+                        AppLog.ui.info("Disconnected session close button tapped")
                         dismiss()
                     }
                     .glassButtonStyle()
 
                     Button("Reconnect") {
+                        AppLog.ui.info("Reconnect button tapped")
                         session.retryConnect()
                     }
                     .prominentGlassButtonStyle()
@@ -100,6 +104,7 @@ struct SessionView: View {
         HStack(spacing: 2) {
             Button {
                 showsInputBar.toggle()
+                AppLog.ui.info("Software input bar visibility changed; visible=\(self.showsInputBar, privacy: .public)")
                 inputFocused = showsInputBar
             } label: {
                 Image(systemName: "keyboard")
@@ -108,6 +113,7 @@ struct SessionView: View {
             }
 
             Button {
+                AppLog.ui.info("Session close button tapped")
                 session.disconnect()
                 dismiss()
             } label: {
@@ -131,12 +137,14 @@ struct SessionView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .onSubmit {
+                    AppLog.ui.debug("Software input submitted; characterCount=\(self.textToSend.count, privacy: .public)")
                     session.sendText(textToSend)
                     textToSend = ""
                     inputFocused = true
                 }
 
             Button {
+                AppLog.ui.debug("Software return key tapped")
                 session.sendReturn()
             } label: {
                 Image(systemName: "return")

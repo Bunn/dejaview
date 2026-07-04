@@ -5,6 +5,9 @@ struct ContentView: View {
     @StateObject private var browser = BonjourBrowser()
     @StateObject private var store = MachineStore()
 
+    @State private var selectedSection: ConnectSection? = .hosts
+    @State private var searchText = ""
+
     @State private var host = ""
     @State private var port = "5900"
     @State private var username = ""
@@ -15,20 +18,29 @@ struct ContentView: View {
     @State private var editingPassword = ""
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    savedMachinesCard
-                    discoveredCard
-                    connectionCard
-                    footerHint
+        NavigationSplitView {
+            ConnectSidebarView(selection: $selectedSection,
+                               hostCount: store.machines.count + browser.services.count,
+                               nearbyCount: browser.services.count)
+        } detail: {
+            detailView
+                .navigationTitle(currentSection.title)
+                .navigationBarTitleDisplayMode(.inline)
+                .searchable(text: $searchText,
+                            placement: .navigationBarDrawer(displayMode: .always),
+                            prompt: "Search")
+                .toolbar {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        Button("Add Host", systemImage: "plus", action: addMachine)
+
+                        Menu("More", systemImage: "ellipsis.circle") {
+                            Button("Refresh Nearby Macs", systemImage: "arrow.clockwise", action: refreshNearbyMacs)
+                            Button("Clear Manual Fields", systemImage: "xmark.circle", action: clearManualForm)
+                        }
+                    }
                 }
-                .padding(.horizontal)
-                .padding(.bottom, 24)
-            }
-            .background(Color(.systemGroupedBackground))
-            .navigationTitle("Deja View")
         }
+        .navigationSplitViewStyle(.balanced)
         .fullScreenCover(isPresented: $isSessionPresented, onDismiss: session.reset) {
             SessionView(session: session)
         }
@@ -38,249 +50,228 @@ struct ContentView: View {
         .onAppear { browser.start() }
     }
 
-    // MARK: - Saved machines
+    // MARK: - Detail
 
-    private var savedMachinesCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Saved Machines")
-                    .font(.headline)
+    private var currentSection: ConnectSection {
+        selectedSection ?? .hosts
+    }
 
-                Spacer()
+    private var detailView: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
 
-                Button {
-                    editingPassword = ""
-                    editingMachine = SavedMachine(name: "", host: "", username: "")
-                } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.title3)
+            ScrollView {
+                detailContentStack
+            }
+        }
+    }
+
+    private var detailContentStack: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            ConnectHeaderView(section: currentSection)
+
+            switch currentSection {
+            case .hosts:
+                hostsContent
+            case .nearby:
+                nearbyContent
+            case .manual:
+                manualPanel
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 18)
+        .frame(maxWidth: 1280, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var hostsContent: some View {
+        if filteredMachines.isEmpty && filteredServices.isEmpty {
+            unavailableHostsView
+        } else {
+            hostGrid
+        }
+
+        manualPanel
+    }
+
+    @ViewBuilder
+    private var nearbyContent: some View {
+        if filteredServices.isEmpty {
+            if isSearching {
+                ContentUnavailableView.search
+            } else {
+                scanningPanel
+            }
+        } else {
+            nearbyGrid
+        }
+    }
+
+    @ViewBuilder
+    private var hostGrid: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 16) {
+                hostGridContent
+            }
+        } else {
+            hostGridContent
+        }
+    }
+
+    private var hostGridContent: some View {
+        LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 16) {
+            ForEach(filteredMachines) { machine in
+                SavedMachineTile(machine: machine) {
+                    connect(to: machine)
+                } edit: {
+                    edit(machine)
                 }
             }
 
-            if store.machines.isEmpty {
-                Text("Save a machine to connect with one tap.")
+            ForEach(filteredServices) { service in
+                DiscoveredServiceTile(service: service) {
+                    select(service)
+                    selectedSection = .manual
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var nearbyGrid: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 16) {
+                nearbyGridContent
+            }
+        } else {
+            nearbyGridContent
+        }
+    }
+
+    private var nearbyGridContent: some View {
+        LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 16) {
+            ForEach(filteredServices) { service in
+                DiscoveredServiceTile(service: service) {
+                    select(service)
+                    selectedSection = .manual
+                }
+            }
+        }
+    }
+
+    private var scanningPanel: some View {
+        HStack(spacing: 14) {
+            ProgressView()
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Looking for Macs")
+                    .font(.headline)
+
+                Text("Screen Sharing hosts appear here automatically.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .padding(.vertical, 4)
-            }
-
-            ForEach(store.machines) { machine in
-                savedMachineRow(machine)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardStyle()
-    }
-
-    private func savedMachineRow(_ machine: SavedMachine) -> some View {
-        HStack(spacing: 6) {
-            Button {
-                connect(to: machine)
-            } label: {
-                HStack(spacing: 14) {
-                    Image(systemName: "desktopcomputer")
-                        .font(.title3)
-                        .foregroundStyle(.tint)
-                        .frame(width: 40, height: 40)
-                        .background(.tint.opacity(0.12), in: Circle())
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(machine.displayName)
-                            .font(.body.weight(.medium))
-                            .foregroundStyle(.primary)
-
-                        Text(machine.subtitle)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    Image(systemName: "play.circle.fill")
-                        .font(.title3)
-                        .foregroundStyle(.tint)
-                }
-                .padding(.vertical, 6)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                editingPassword = store.password(for: machine)
-                editingMachine = machine
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 4)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    // MARK: - Manual connection
-
-    private var connectionCard: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Text("Manual Connection")
-                    .font(.headline)
-
-                Spacer()
-            }
-
-            VStack(spacing: 0) {
-                field(icon: "desktopcomputer") {
-                    TextField("Host or IP address", text: $host)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                }
-
-                Divider().padding(.leading, 40)
-
-                field(icon: "number") {
-                    TextField("Port", text: $port)
-                        .keyboardType(.numberPad)
-                }
-
-                Divider().padding(.leading, 40)
-
-                field(icon: "person") {
-                    TextField("Username (macOS login)", text: $username)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
-
-                Divider().padding(.leading, 40)
-
-                field(icon: "key") {
-                    SecureField("Password", text: $password)
-                }
-            }
-
-            HStack(spacing: 12) {
-                Button {
-                    editingPassword = password
-                    editingMachine = SavedMachine(name: "",
-                                                  host: host,
-                                                  port: UInt16(port) ?? 5900,
-                                                  username: username)
-                } label: {
-                    Label("Save", systemImage: "bookmark")
-                        .font(.headline)
-                        .padding(.vertical, 6)
-                }
-                .glassButtonStyle()
-                .disabled(host.isEmpty)
-
-                Button {
-                    connect()
-                } label: {
-                    Label("Connect", systemImage: "display")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                }
-                .prominentGlassButtonStyle()
-                .disabled(host.isEmpty)
-            }
-        }
-        .cardStyle()
-    }
-
-    private func field(icon: String, @ViewBuilder content: () -> some View) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .foregroundStyle(.secondary)
-                .frame(width: 28)
-
-            content()
-        }
-        .padding(.vertical, 12)
-    }
-
-    // MARK: - Discovered Macs
-
-    private var discoveredCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("On Your Network")
-                .font(.headline)
-
-            if browser.services.isEmpty {
-                HStack(spacing: 10) {
-                    ProgressView()
-                    Text("Looking for Macs with Screen Sharing on…")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 8)
-            }
-
-            ForEach(browser.services) { service in
-                Button {
-                    select(service)
-                } label: {
-                    serviceRow(service)
-                }
-                .buttonStyle(.plain)
-                .disabled(!service.isResolved)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardStyle()
-    }
-
-    private func serviceRow(_ service: DiscoveredService) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: "wifi")
-                .font(.title3)
-                .foregroundStyle(.tint)
-                .frame(width: 40, height: 40)
-                .background(.tint.opacity(0.12), in: Circle())
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(service.name)
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(.primary)
-
-                if let serviceHost = service.host, let servicePort = service.port {
-                    Text("\(serviceHost):\(String(servicePort))")
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Resolving address…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
 
             Spacer()
-
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 6)
-        .contentShape(Rectangle())
+        .padding(20)
+        .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
+        .glassPanel(cornerRadius: 28)
     }
 
-    private var footerHint: some View {
-        Text("Tapping a discovered Mac fills in the manual connection form. To share a Mac's screen, enable Screen Sharing on it in System Settings → General → Sharing.")
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 4)
+    @ViewBuilder
+    private var unavailableHostsView: some View {
+        if isSearching {
+            ContentUnavailableView.search
+        } else {
+            ContentUnavailableView("No Hosts",
+                                   systemImage: "rectangle.connected.to.line.below",
+                                   description: Text("Add a host, discover one nearby, or connect manually."))
+                .padding(24)
+                .frame(maxWidth: .infinity)
+                .glassPanel(cornerRadius: 28)
+        }
+    }
+
+    private var manualPanel: some View {
+        ManualConnectionPanel(host: $host,
+                              port: $port,
+                              username: $username,
+                              password: $password,
+                              save: saveManualMachine,
+                              connect: connect,
+                              clear: clearManualForm)
+    }
+
+    private var gridColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: 300), spacing: 16, alignment: .top)]
+    }
+
+    private var filteredMachines: [SavedMachine] {
+        guard isSearching else { return store.machines }
+
+        return store.machines.filter { machine in
+            machine.displayName.localizedCaseInsensitiveContains(searchQuery) ||
+            machine.subtitle.localizedCaseInsensitiveContains(searchQuery)
+        }
+    }
+
+    private var filteredServices: [DiscoveredService] {
+        guard isSearching else { return browser.services }
+
+        return browser.services.filter { service in
+            service.name.localizedCaseInsensitiveContains(searchQuery) ||
+            service.host?.localizedCaseInsensitiveContains(searchQuery) == true
+        }
+    }
+
+    private var isSearching: Bool {
+        !searchQuery.isEmpty
+    }
+
+    private var searchQuery: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Actions
+
+    private func addMachine() {
+        editingPassword = ""
+        editingMachine = SavedMachine(name: "", host: "", username: "")
+    }
+
+    private func edit(_ machine: SavedMachine) {
+        editingPassword = store.password(for: machine)
+        editingMachine = machine
+    }
+
+    private func saveManualMachine() {
+        editingPassword = password
+        editingMachine = SavedMachine(name: "",
+                                      host: host,
+                                      port: UInt16(port) ?? 5900,
+                                      username: username)
+    }
 
     private func select(_ service: DiscoveredService) {
         guard let serviceHost = service.host, let servicePort = service.port else { return }
 
         host = serviceHost
         port = String(servicePort)
+    }
+
+    private func clearManualForm() {
+        host = ""
+        port = "5900"
+        username = ""
+        password = ""
+    }
+
+    private func refreshNearbyMacs() {
+        browser.stop()
+        browser.start()
     }
 
     private func connect() {

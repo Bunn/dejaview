@@ -18,17 +18,22 @@ struct RemoteDesktopView: UIViewRepresentable {
     func makeUIView(context: Context) -> ScreenView {
         let view = ScreenView()
         view.session = session
+        DispatchQueue.main.async {
+            view.becomeFirstResponder()
+        }
         return view
     }
 
     func updateUIView(_ uiView: ScreenView, context: Context) {
+        uiView.session = session
         uiView.display(image: session.image)
     }
 
-    final class ScreenView: UIView {
+    final class ScreenView: UIView, UIGestureRecognizerDelegate {
         weak var session: VNCSession?
 
         private var imageSize: CGSize = .zero
+        private weak var pointerScrollPan: UIPanGestureRecognizer?
 
         // Single-touch state
         private var lastTouchLocation: CGPoint = .zero
@@ -44,8 +49,9 @@ struct RemoteDesktopView: UIViewRepresentable {
         private var pendingPressPoint: CGPoint?
         private var directPressed = false
 
-        // Two-finger scroll state
-        private var scrollAccumulator: CGFloat = 0
+        // Scroll state
+        private var touchScrollAccumulator = CGPoint.zero
+        private var pointerScrollAccumulator = CGPoint.zero
 
         private let tapMovementThreshold: CGFloat = 8
         private let tapDurationThreshold: TimeInterval = 0.35
@@ -56,6 +62,10 @@ struct RemoteDesktopView: UIViewRepresentable {
         /// few lines each on macOS, so this needs to be small — and it acts
         /// as a sensitivity dial (lower = faster scrolling).
         private let scrollStep: CGFloat = 4
+
+        override var canBecomeFirstResponder: Bool {
+            true
+        }
 
         override init(frame: CGRect) {
             super.init(frame: frame)
@@ -75,10 +85,29 @@ struct RemoteDesktopView: UIViewRepresentable {
             twoFingerPan.minimumNumberOfTouches = 2
             twoFingerPan.maximumNumberOfTouches = 2
             addGestureRecognizer(twoFingerPan)
+
+            let pointerHover = UIHoverGestureRecognizer(target: self,
+                                                        action: #selector(handlePointerHover(_:)))
+            addGestureRecognizer(pointerHover)
+
+            let pointerScrollPan = UIPanGestureRecognizer(target: self,
+                                                          action: #selector(handlePointerScroll(_:)))
+            pointerScrollPan.allowedScrollTypesMask = .all
+            pointerScrollPan.delegate = self
+            addGestureRecognizer(pointerScrollPan)
+            self.pointerScrollPan = pointerScrollPan
         }
 
         required init?(coder: NSCoder) {
             fatalError("init(coder:) has not been implemented")
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+
+            if window != nil {
+                becomeFirstResponder()
+            }
         }
 
         func display(image: CGImage?) {
@@ -137,44 +166,89 @@ struct RemoteDesktopView: UIViewRepresentable {
         }
 
         @objc private func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
-            guard let session else { return }
+            guard session != nil else { return }
 
             switch gesture.state {
             case .began:
-                scrollAccumulator = 0
+                touchScrollAccumulator = .zero
 
             case .changed:
-                scrollAccumulator += gesture.translation(in: self).y
+                let delta = gesture.translation(in: self)
                 gesture.setTranslation(.zero, in: self)
 
-                let scrollPoint: CGPoint
-
-                switch session.touchMode {
-                case .trackpad:
-                    scrollPoint = session.cursorLocation
-                case .direct:
-                    scrollPoint = framebufferPoint(for: gesture.location(in: self))
-                        ?? session.cursorLocation
-                }
-
-                // Natural direction: fingers down → content follows (wheel up).
-                let stepCount = Int(abs(scrollAccumulator) / scrollStep)
-
-                if stepCount > 0 {
-                    let direction: VNCSession.ScrollDirection =
-                        scrollAccumulator > 0 ? .up : .down
-
-                    session.scroll(direction,
-                                   at: scrollPoint,
-                                   steps: UInt32(stepCount))
-
-                    scrollAccumulator -= CGFloat(stepCount) * scrollStep
-                        * (scrollAccumulator > 0 ? 1 : -1)
-                }
+                forwardScroll(delta: delta,
+                              accumulator: &touchScrollAccumulator)
 
             default:
-                scrollAccumulator = 0
+                touchScrollAccumulator = .zero
             }
+        }
+
+        @objc private func handlePointerScroll(_ gesture: UIPanGestureRecognizer) {
+            guard session != nil else { return }
+
+            switch gesture.state {
+            case .began:
+                pointerScrollAccumulator = .zero
+                becomeFirstResponder()
+
+            case .changed:
+                let delta = gesture.translation(in: self)
+                gesture.setTranslation(.zero, in: self)
+
+                forwardScroll(delta: delta,
+                              accumulator: &pointerScrollAccumulator)
+
+            default:
+                pointerScrollAccumulator = .zero
+            }
+        }
+
+        @objc private func handlePointerHover(_ gesture: UIHoverGestureRecognizer) {
+            guard let session,
+                  gesture.state == .began || gesture.state == .changed,
+                  let point = framebufferPoint(for: gesture.location(in: self)) else {
+                return
+            }
+
+            becomeFirstResponder()
+            session.moveCursor(to: point)
+        }
+
+        private func forwardScroll(delta: CGPoint,
+                                   accumulator: inout CGPoint) {
+            accumulator.x += delta.x
+            accumulator.y += delta.y
+
+            let horizontalSteps = Int(abs(accumulator.x) / scrollStep)
+
+            if horizontalSteps > 0 {
+                let direction: VNCSession.ScrollDirection =
+                    accumulator.x > 0 ? .left : .right
+
+                session?.scroll(direction, steps: UInt32(horizontalSteps))
+
+                accumulator.x -= CGFloat(horizontalSteps) * scrollStep
+                    * (accumulator.x > 0 ? 1 : -1)
+            }
+
+            let verticalSteps = Int(abs(accumulator.y) / scrollStep)
+
+            if verticalSteps > 0 {
+                // Natural direction: fingers down -> content follows (wheel up).
+                let direction: VNCSession.ScrollDirection =
+                    accumulator.y > 0 ? .up : .down
+
+                session?.scroll(direction, steps: UInt32(verticalSteps))
+
+                accumulator.y -= CGFloat(verticalSteps) * scrollStep
+                    * (accumulator.y > 0 ? 1 : -1)
+            }
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldReceive touch: UITouch) -> Bool {
+            gestureRecognizer !== pointerScrollPan
         }
 
         // MARK: - Single-finger touch handling
@@ -187,6 +261,8 @@ struct RemoteDesktopView: UIViewRepresentable {
 
         override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
             guard let touch = touches.first, let session else { return }
+
+            becomeFirstResponder()
 
             // Second finger down → this is a two-finger gesture. Abort any
             // single-finger interaction and let the recognizers take over.
@@ -213,6 +289,59 @@ struct RemoteDesktopView: UIViewRepresentable {
                 pendingPressPoint = point
                 schedulePendingPress()
             }
+        }
+
+        // MARK: - Hardware keyboard input
+
+        override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            guard let session else {
+                super.pressesBegan(presses, with: event)
+                return
+            }
+
+            var unhandledPresses = Set<UIPress>()
+
+            for press in presses {
+                guard let key = press.key else {
+                    unhandledPresses.insert(press)
+                    continue
+                }
+
+                if let keyCode = HardwareKeyboardKeyMapper.keyCode(for: key.keyCode) {
+                    let modifiers = HardwareKeyboardKeyMapper.modifierKeyCodes(
+                        for: key.modifierFlags,
+                        includeShift: true
+                    )
+
+                    session.sendKey(keyCode, modifiers: modifiers)
+                } else if !sendText(for: key, through: session) {
+                    unhandledPresses.insert(press)
+                }
+            }
+
+            if !unhandledPresses.isEmpty {
+                super.pressesBegan(unhandledPresses, with: event)
+            }
+        }
+
+        private func sendText(for key: UIKey, through session: VNCSession) -> Bool {
+            let shortcutModifiers: UIKeyModifierFlags = [.command, .control, .alternate]
+            let shouldForwardShortcut = !key.modifierFlags.intersection(shortcutModifiers).isEmpty
+
+            if shouldForwardShortcut, !key.charactersIgnoringModifiers.isEmpty {
+                let modifiers = HardwareKeyboardKeyMapper.modifierKeyCodes(
+                    for: key.modifierFlags,
+                    includeShift: true
+                )
+
+                session.sendText(key.charactersIgnoringModifiers, modifiers: modifiers)
+                return true
+            }
+
+            guard !key.characters.isEmpty else { return false }
+
+            session.sendText(key.characters)
+            return true
         }
 
         override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {

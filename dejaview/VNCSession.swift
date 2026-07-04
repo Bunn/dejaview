@@ -171,6 +171,17 @@ final class VNCSession: NSObject, ObservableObject {
             y: min(max(cursorLocation.y + delta.y, 0), CGFloat(image.height))
         )
 
+        moveCursor(to: clamped, dragging: dragging)
+    }
+
+    func moveCursor(to point: CGPoint, dragging: Bool = false) {
+        guard let image else { return }
+
+        let clamped = CGPoint(
+            x: min(max(point.x, 0), CGFloat(image.width)),
+            y: min(max(point.y, 0), CGFloat(image.height))
+        )
+
         cursorLocation = clamped
 
         let x = UInt16(clamping: Int(clamped.x))
@@ -206,20 +217,32 @@ final class VNCSession: NSObject, ObservableObject {
     }
 
     enum ScrollDirection {
-        case up, down
+        case up
+        case down
+        case left
+        case right
     }
 
-    func scroll(_ direction: ScrollDirection, at point: CGPoint, steps: UInt32 = 1) {
+    func scroll(_ direction: ScrollDirection, steps: UInt32 = 1) {
         guard steps > 0 else { return }
 
-        cursorLocation = point
+        let x = UInt16(clamping: Int(cursorLocation.x))
+        let y = UInt16(clamping: Int(cursorLocation.y))
 
-        let x = UInt16(clamping: Int(point.x))
-        let y = UInt16(clamping: Int(point.y))
+        let wheel: VNCMouseWheel
 
-        connection?.mouseWheel(direction == .up ? .up : .down,
-                               x: x, y: y,
-                               steps: steps)
+        switch direction {
+        case .up:
+            wheel = .up
+        case .down:
+            wheel = .down
+        case .left:
+            wheel = .left
+        case .right:
+            wheel = .right
+        }
+
+        connection?.mouseWheel(wheel, x: x, y: y, steps: steps)
     }
 
     func pressAtCursor() {
@@ -232,18 +255,30 @@ final class VNCSession: NSObject, ObservableObject {
 
     // MARK: - Keyboard input
 
-    func sendText(_ text: String) {
+    func sendText(_ text: String, modifiers: [VNCKeyCode] = []) {
         guard let connection else { return }
+
+        modifiers.forEach { connection.keyDown($0) }
 
         for keyCode in VNCKeyCode.keyCodesFrom(characters: text) {
             connection.keyDown(keyCode)
             connection.keyUp(keyCode)
         }
+
+        modifiers.reversed().forEach { connection.keyUp($0) }
+    }
+
+    func sendKey(_ keyCode: VNCKeyCode, modifiers: [VNCKeyCode] = []) {
+        guard let connection else { return }
+
+        modifiers.forEach { connection.keyDown($0) }
+        connection.keyDown(keyCode)
+        connection.keyUp(keyCode)
+        modifiers.reversed().forEach { connection.keyUp($0) }
     }
 
     func sendReturn() {
-        connection?.keyDown(.return)
-        connection?.keyUp(.return)
+        sendKey(.return)
     }
 }
 

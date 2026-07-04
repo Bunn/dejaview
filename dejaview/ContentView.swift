@@ -8,14 +8,12 @@ struct ContentView: View {
     @State private var selectedSection: ConnectSection? = .hosts
     @State private var searchText = ""
 
-    @State private var host = ""
-    @State private var port = "5900"
-    @State private var username = ""
-    @State private var password = ""
     @State private var isSessionPresented = false
 
     @State private var editingMachine: SavedMachine?
     @State private var editingPassword = ""
+    @State private var pendingConnectionMachine: SavedMachine?
+    @State private var pendingConnectionPassword = ""
 
     var body: some View {
         NavigationSplitView {
@@ -35,7 +33,6 @@ struct ContentView: View {
 
                         Menu("More", systemImage: "ellipsis.circle") {
                             Button("Refresh Nearby Macs", systemImage: "arrow.clockwise", action: refreshNearbyMacs)
-                            Button("Clear Manual Fields", systemImage: "xmark.circle", action: clearManualForm)
                         }
                     }
                 }
@@ -44,8 +41,11 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $isSessionPresented, onDismiss: session.reset) {
             SessionView(session: session)
         }
-        .sheet(item: $editingMachine) { machine in
-            EditMachineView(store: store, machine: machine, password: editingPassword)
+        .sheet(item: $editingMachine, onDismiss: connectPendingMachine) { machine in
+            EditMachineView(store: store,
+                            machine: machine,
+                            password: editingPassword,
+                            connectWithoutSaving: queueDirectConnection)
         }
         .onAppear { browser.start() }
     }
@@ -76,8 +76,6 @@ struct ContentView: View {
                 hostsContent
             case .nearby:
                 nearbyContent
-            case .manual:
-                manualPanel
             }
         }
         .padding(.horizontal, 20)
@@ -132,8 +130,7 @@ struct ContentView: View {
 
             ForEach(filteredServices) { service in
                 DiscoveredServiceTile(service: service) {
-                    select(service)
-                    selectedSection = .manual
+                    addMachine(for: service)
                 }
             }
         }
@@ -154,8 +151,7 @@ struct ContentView: View {
         LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 16) {
             ForEach(filteredServices) { service in
                 DiscoveredServiceTile(service: service) {
-                    select(service)
-                    selectedSection = .manual
+                    addMachine(for: service)
                 }
             }
         }
@@ -196,13 +192,10 @@ struct ContentView: View {
     }
 
     private var manualPanel: some View {
-        ManualConnectionPanel(host: $host,
-                              port: $port,
-                              username: $username,
-                              password: $password,
-                              save: saveManualMachine,
-                              connect: connect,
-                              clear: clearManualForm)
+        Button("New Machine", systemImage: "plus", action: addMachine)
+            .font(.headline)
+            .frame(maxWidth: .infinity, minHeight: 52)
+            .prominentGlassButtonStyle()
     }
 
     private var gridColumns: [GridItem] {
@@ -242,31 +235,19 @@ struct ContentView: View {
         editingMachine = SavedMachine(name: "", host: "", username: "")
     }
 
+    private func addMachine(for service: DiscoveredService) {
+        guard let serviceHost = service.host, let servicePort = service.port else { return }
+
+        editingPassword = ""
+        editingMachine = SavedMachine(name: service.name,
+                                      host: serviceHost,
+                                      port: servicePort,
+                                      username: "")
+    }
+
     private func edit(_ machine: SavedMachine) {
         editingPassword = store.password(for: machine)
         editingMachine = machine
-    }
-
-    private func saveManualMachine() {
-        editingPassword = password
-        editingMachine = SavedMachine(name: "",
-                                      host: host,
-                                      port: UInt16(port) ?? 5900,
-                                      username: username)
-    }
-
-    private func select(_ service: DiscoveredService) {
-        guard let serviceHost = service.host, let servicePort = service.port else { return }
-
-        host = serviceHost
-        port = String(servicePort)
-    }
-
-    private func clearManualForm() {
-        host = ""
-        port = "5900"
-        username = ""
-        password = ""
     }
 
     private func refreshNearbyMacs() {
@@ -274,20 +255,28 @@ struct ContentView: View {
         browser.start()
     }
 
-    private func connect() {
-        session.connect(host: host,
-                        port: UInt16(port) ?? 5900,
-                        username: username,
-                        password: password)
+    private func queueDirectConnection(machine: SavedMachine, password: String) {
+        pendingConnectionMachine = machine
+        pendingConnectionPassword = password
+    }
 
-        isSessionPresented = true
+    private func connectPendingMachine() {
+        guard let machine = pendingConnectionMachine else { return }
+
+        pendingConnectionMachine = nil
+        connect(to: machine, password: pendingConnectionPassword)
+        pendingConnectionPassword = ""
     }
 
     private func connect(to machine: SavedMachine) {
+        connect(to: machine, password: store.password(for: machine))
+    }
+
+    private func connect(to machine: SavedMachine, password: String) {
         session.connect(host: machine.host,
                         port: machine.port,
                         username: machine.username,
-                        password: store.password(for: machine))
+                        password: password)
 
         isSessionPresented = true
     }

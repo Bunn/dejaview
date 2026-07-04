@@ -3,7 +3,6 @@ import SwiftUI
 enum ConnectSection: String, CaseIterable, Hashable, Identifiable {
     case hosts
     case nearby
-    case manual
 
     var id: Self { self }
 
@@ -13,8 +12,6 @@ enum ConnectSection: String, CaseIterable, Hashable, Identifiable {
             "Hosts"
         case .nearby:
             "Nearby Macs"
-        case .manual:
-            "Manual"
         }
     }
 
@@ -24,8 +21,6 @@ enum ConnectSection: String, CaseIterable, Hashable, Identifiable {
             "Saved and discovered screen sharing targets."
         case .nearby:
             "Macs advertising Screen Sharing on this network."
-        case .manual:
-            "Connect directly with a host name or IP address."
         }
     }
 
@@ -35,8 +30,6 @@ enum ConnectSection: String, CaseIterable, Hashable, Identifiable {
             "rectangle.connected.to.line.below"
         case .nearby:
             "dot.radiowaves.left.and.right"
-        case .manual:
-            "keyboard"
         }
     }
 }

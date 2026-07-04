@@ -40,7 +40,7 @@ struct DiscoveredServiceTile: View {
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
         .glassPanel(cornerRadius: 24, isInteractive: service.isResolved)
-        .accessibilityHint(service.isResolved ? "Fills the manual connection fields." : "Address is still resolving.")
+        .accessibilityHint(service.isResolved ? "Opens connection details." : "Address is still resolving.")
     }
 
     private var subtitle: String {

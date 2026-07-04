@@ -4,13 +4,18 @@ import SwiftUI
 struct EditMachineView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: MachineStore
+    let connectWithoutSaving: ((SavedMachine, String) -> Void)?
 
     @State private var machine: SavedMachine
     @State private var password: String
     @State private var portText: String
 
-    init(store: MachineStore, machine: SavedMachine, password: String) {
+    init(store: MachineStore,
+         machine: SavedMachine,
+         password: String,
+         connectWithoutSaving: ((SavedMachine, String) -> Void)? = nil) {
         self.store = store
+        self.connectWithoutSaving = connectWithoutSaving
         _machine = State(initialValue: machine)
         _password = State(initialValue: password)
         _portText = State(initialValue: String(machine.port))
@@ -18,6 +23,10 @@ struct EditMachineView: View {
 
     private var isNew: Bool {
         !store.contains(machine)
+    }
+
+    private var canSubmit: Bool {
+        !machine.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -43,6 +52,15 @@ struct EditMachineView: View {
                     SecureField("Password", text: $password)
                 }
 
+                if isNew, connectWithoutSaving != nil {
+                    Section {
+                        Button("Connect Without Saving", systemImage: "display") {
+                            connectNow()
+                        }
+                        .disabled(!canSubmit)
+                    }
+                }
+
                 if !isNew {
                     Section {
                         Button("Delete Machine", role: .destructive) {
@@ -65,18 +83,14 @@ struct EditMachineView: View {
                     Button("Save") {
                         save()
                     }
-                    .disabled(machine.host.isEmpty)
+                    .disabled(!canSubmit)
                 }
             }
         }
     }
 
     private func save() {
-        machine.port = UInt16(portText) ?? 5900
-
-        if machine.name.trimmingCharacters(in: .whitespaces).isEmpty {
-            machine.name = machine.host
-        }
+        machine = preparedMachine()
 
         if isNew {
             store.add(machine, password: password)
@@ -85,5 +99,22 @@ struct EditMachineView: View {
         }
 
         dismiss()
+    }
+
+    private func connectNow() {
+        connectWithoutSaving?(preparedMachine(), password)
+        dismiss()
+    }
+
+    private func preparedMachine() -> SavedMachine {
+        var prepared = machine
+        prepared.host = prepared.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        prepared.port = UInt16(portText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 5900
+
+        if prepared.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            prepared.name = prepared.host
+        }
+
+        return prepared
     }
 }

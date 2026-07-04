@@ -27,8 +27,6 @@ struct ConnectSidebarView: View {
             hostCount
         case .nearby:
             nearbyCount
-        case .manual:
-            0
         }
     }
 }

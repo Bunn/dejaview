@@ -1,0 +1,381 @@
+import SwiftUI
+import UIKit
+
+/// Renders the remote framebuffer into a CALayer and maps touches
+/// to VNC pointer events.
+///
+/// One finger (see `VNCSession.TouchMode`):
+/// - direct:   tap = click where you touch, drag = click-drag (absolute)
+/// - trackpad: drag moves the cursor from where it is, tap = click at the
+///             cursor, long-press then drag = click-drag (relative)
+///
+/// Two fingers (both modes):
+/// - two-finger tap  = right click
+/// - two-finger drag = scroll wheel (natural direction)
+struct RemoteDesktopView: UIViewRepresentable {
+    @ObservedObject var session: VNCSession
+
+    func makeUIView(context: Context) -> ScreenView {
+        let view = ScreenView()
+        view.session = session
+        return view
+    }
+
+    func updateUIView(_ uiView: ScreenView, context: Context) {
+        uiView.display(image: session.image)
+    }
+
+    final class ScreenView: UIView {
+        weak var session: VNCSession?
+
+        private var imageSize: CGSize = .zero
+
+        // Single-touch state
+        private var lastTouchLocation: CGPoint = .zero
+        private var touchStartTime: TimeInterval = 0
+        private var touchMoved = false
+        private var isDragging = false
+        private var multiTouchActive = false
+        private var longPressWork: DispatchWorkItem?
+
+        // Direct-mode deferred press (avoids a stray left click when the
+        // first finger of a two-finger gesture lands slightly early).
+        private var pendingPressWork: DispatchWorkItem?
+        private var pendingPressPoint: CGPoint?
+        private var directPressed = false
+
+        // Two-finger scroll state
+        private var scrollAccumulator: CGFloat = 0
+
+        private let tapMovementThreshold: CGFloat = 8
+        private let tapDurationThreshold: TimeInterval = 0.35
+        private let longPressDelay: TimeInterval = 0.5
+        private let pressDebounce: TimeInterval = 0.05
+
+        /// Points of finger travel per wheel step. Wheel steps only move a
+        /// few lines each on macOS, so this needs to be small — and it acts
+        /// as a sensitivity dial (lower = faster scrolling).
+        private let scrollStep: CGFloat = 4
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+
+            backgroundColor = .black
+            layer.contentsGravity = .resizeAspect
+            layer.magnificationFilter = .linear
+            isMultipleTouchEnabled = true
+
+            let twoFingerTap = UITapGestureRecognizer(target: self,
+                                                      action: #selector(handleTwoFingerTap(_:)))
+            twoFingerTap.numberOfTouchesRequired = 2
+            addGestureRecognizer(twoFingerTap)
+
+            let twoFingerPan = UIPanGestureRecognizer(target: self,
+                                                      action: #selector(handleTwoFingerPan(_:)))
+            twoFingerPan.minimumNumberOfTouches = 2
+            twoFingerPan.maximumNumberOfTouches = 2
+            addGestureRecognizer(twoFingerPan)
+        }
+
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        func display(image: CGImage?) {
+            layer.contents = image
+
+            if let image {
+                imageSize = CGSize(width: image.width, height: image.height)
+            }
+        }
+
+        // MARK: - Coordinate mapping (.resizeAspect letterboxing)
+
+        private var renderScale: CGFloat {
+            guard imageSize.width > 0, imageSize.height > 0,
+                  bounds.width > 0, bounds.height > 0 else { return 1 }
+
+            return min(bounds.width / imageSize.width,
+                       bounds.height / imageSize.height)
+        }
+
+        private func framebufferPoint(for point: CGPoint) -> CGPoint? {
+            guard imageSize.width > 0, imageSize.height > 0,
+                  bounds.width > 0, bounds.height > 0 else { return nil }
+
+            let scale = renderScale
+
+            let renderedSize = CGSize(width: imageSize.width * scale,
+                                      height: imageSize.height * scale)
+
+            let origin = CGPoint(x: (bounds.width - renderedSize.width) / 2,
+                                 y: (bounds.height - renderedSize.height) / 2)
+
+            let fx = (point.x - origin.x) / scale
+            let fy = (point.y - origin.y) / scale
+
+            guard fx >= 0, fy >= 0,
+                  fx <= imageSize.width, fy <= imageSize.height else { return nil }
+
+            return CGPoint(x: fx, y: fy)
+        }
+
+        // MARK: - Two-finger gestures
+
+        @objc private func handleTwoFingerTap(_ gesture: UITapGestureRecognizer) {
+            guard let session else { return }
+
+            switch session.touchMode {
+            case .trackpad:
+                session.rightClickAtCursor()
+
+            case .direct:
+                if let point = framebufferPoint(for: gesture.location(in: self)) {
+                    session.rightClick(at: point)
+                }
+            }
+        }
+
+        @objc private func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
+            guard let session else { return }
+
+            switch gesture.state {
+            case .began:
+                scrollAccumulator = 0
+
+            case .changed:
+                scrollAccumulator += gesture.translation(in: self).y
+                gesture.setTranslation(.zero, in: self)
+
+                let scrollPoint: CGPoint
+
+                switch session.touchMode {
+                case .trackpad:
+                    scrollPoint = session.cursorLocation
+                case .direct:
+                    scrollPoint = framebufferPoint(for: gesture.location(in: self))
+                        ?? session.cursorLocation
+                }
+
+                // Natural direction: fingers down → content follows (wheel up).
+                let stepCount = Int(abs(scrollAccumulator) / scrollStep)
+
+                if stepCount > 0 {
+                    let direction: VNCSession.ScrollDirection =
+                        scrollAccumulator > 0 ? .up : .down
+
+                    session.scroll(direction,
+                                   at: scrollPoint,
+                                   steps: UInt32(stepCount))
+
+                    scrollAccumulator -= CGFloat(stepCount) * scrollStep
+                        * (scrollAccumulator > 0 ? 1 : -1)
+                }
+
+            default:
+                scrollAccumulator = 0
+            }
+        }
+
+        // MARK: - Single-finger touch handling
+
+        private func activeTouchCount(_ event: UIEvent?) -> Int {
+            event?.allTouches?.filter {
+                $0.phase == .began || $0.phase == .moved || $0.phase == .stationary
+            }.count ?? 0
+        }
+
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+            guard let touch = touches.first, let session else { return }
+
+            // Second finger down → this is a two-finger gesture. Abort any
+            // single-finger interaction and let the recognizers take over.
+            if activeTouchCount(event) >= 2 {
+                enterMultiTouch()
+                return
+            }
+
+            let location = touch.location(in: self)
+
+            switch session.touchMode {
+            case .trackpad:
+                lastTouchLocation = location
+                touchStartTime = touch.timestamp
+                touchMoved = false
+                isDragging = false
+                multiTouchActive = false
+                scheduleLongPress()
+
+            case .direct:
+                guard let point = framebufferPoint(for: location) else { return }
+
+                multiTouchActive = false
+                pendingPressPoint = point
+                schedulePendingPress()
+            }
+        }
+
+        override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+            guard let touch = touches.first, let session,
+                  !multiTouchActive, activeTouchCount(event) < 2 else { return }
+
+            let location = touch.location(in: self)
+
+            switch session.touchMode {
+            case .trackpad:
+                let delta = CGPoint(x: location.x - lastTouchLocation.x,
+                                    y: location.y - lastTouchLocation.y)
+
+                if !touchMoved,
+                   abs(delta.x) + abs(delta.y) > tapMovementThreshold {
+                    touchMoved = true
+                    cancelLongPress()
+                }
+
+                guard touchMoved else { return }
+
+                lastTouchLocation = location
+
+                // View-point delta → framebuffer delta, so finger travel
+                // matches on-screen cursor travel.
+                let scale = renderScale
+                let fbDelta = CGPoint(x: delta.x / scale, y: delta.y / scale)
+
+                session.moveCursor(by: fbDelta, dragging: isDragging)
+
+            case .direct:
+                guard let point = framebufferPoint(for: location) else { return }
+
+                // Movement before the debounce fired → press immediately so
+                // dragging stays responsive.
+                firePendingPressIfNeeded()
+
+                guard directPressed else { return }
+
+                // Button stays pressed while coordinates change → drag.
+                session.leftButtonDown(at: point)
+            }
+        }
+
+        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+            guard let touch = touches.first, let session else { return }
+
+            if multiTouchActive {
+                if activeTouchCount(event) == 0 { multiTouchActive = false }
+                return
+            }
+
+            switch session.touchMode {
+            case .trackpad:
+                cancelLongPress()
+
+                if isDragging {
+                    session.releaseAtCursor()
+                    isDragging = false
+                } else if !touchMoved,
+                          touch.timestamp - touchStartTime < tapDurationThreshold {
+                    session.clickAtCursor()
+                }
+
+            case .direct:
+                // Tap ended before the debounce → full click now.
+                firePendingPressIfNeeded()
+
+                guard directPressed else { return }
+
+                directPressed = false
+
+                let point = framebufferPoint(for: touch.location(in: self))
+                    ?? session.cursorLocation
+                session.leftButtonUp(at: point)
+            }
+        }
+
+        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+            guard let session else { return }
+
+            cancelLongPress()
+            cancelPendingPress()
+
+            if isDragging {
+                session.releaseAtCursor()
+                isDragging = false
+            }
+
+            if directPressed {
+                directPressed = false
+                session.leftButtonUp(at: session.cursorLocation)
+            }
+
+            if activeTouchCount(event) == 0 { multiTouchActive = false }
+        }
+
+        private func enterMultiTouch() {
+            multiTouchActive = true
+
+            cancelLongPress()
+            cancelPendingPress()
+
+            if isDragging {
+                session?.releaseAtCursor()
+                isDragging = false
+            }
+
+            if directPressed {
+                directPressed = false
+                session?.leftButtonUp(at: session?.cursorLocation ?? .zero)
+            }
+        }
+
+        // MARK: - Deferred press (direct mode)
+
+        private func schedulePendingPress() {
+            cancelPendingPress()
+
+            let work = DispatchWorkItem { [weak self] in
+                self?.firePendingPressIfNeeded()
+            }
+
+            pendingPressWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + pressDebounce,
+                                          execute: work)
+        }
+
+        private func firePendingPressIfNeeded() {
+            guard let point = pendingPressPoint else { return }
+
+            cancelPendingPress()
+            pendingPressPoint = nil
+            directPressed = true
+            session?.leftButtonDown(at: point)
+        }
+
+        private func cancelPendingPress() {
+            pendingPressWork?.cancel()
+            pendingPressWork = nil
+        }
+
+        // MARK: - Long-press → drag (trackpad mode)
+
+        private func scheduleLongPress() {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, !self.touchMoved, !self.isDragging,
+                      !self.multiTouchActive else { return }
+
+                self.isDragging = true
+                self.session?.pressAtCursor()
+
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            }
+
+            longPressWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + longPressDelay,
+                                          execute: work)
+        }
+
+        private func cancelLongPress() {
+            longPressWork?.cancel()
+            longPressWork = nil
+        }
+    }
+}

@@ -1,6 +1,5 @@
-import Combine
-
-protocol BonjourBrowsing: ObservableObject, AnyObject {
+@MainActor
+protocol BonjourBrowsing: AnyObject {
     var services: [DiscoveredService] { get }
 
     func start()

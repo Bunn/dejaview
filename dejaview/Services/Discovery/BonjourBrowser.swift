@@ -1,21 +1,32 @@
 import Foundation
 import Network
+import Observation
 import OSLog
 
 /// Discovers Screen Sharing / VNC servers (`_rfb._tcp`) on the local network
 /// and eagerly resolves each one to a concrete IP address + port, preferring
 /// IPv4 (link-local IPv6 addresses often fail to connect).
-final class BonjourBrowser: ObservableObject, BonjourBrowsing {
-    @Published var services: [DiscoveredService] = []
+@MainActor
+@Observable
+final class BonjourBrowser: BonjourBrowsing {
+    var services: [DiscoveredService] = []
 
+    @ObservationIgnored
     private var browser: NWBrowser?
+    @ObservationIgnored
     private var resolveConnections: [String: NWConnection] = [:]
-    private var resolveTimeouts: [String: DispatchWorkItem] = [:]
-    private var resolveRetryWorkItems: [String: DispatchWorkItem] = [:]
+    @ObservationIgnored
+    private var resolveTimeouts: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored
+    private var resolveRetryTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored
     private var resolveAttempts: [String: Int] = [:]
 
+    @ObservationIgnored
     private let resolveTimeout: TimeInterval = 5
+    @ObservationIgnored
     private let resolveRetryDelay: TimeInterval = 2
+    @ObservationIgnored
     private let maxResolveAttempts = 3
 
     func start() {
@@ -30,13 +41,13 @@ final class BonjourBrowser: ObservableObject, BonjourBrowsing {
                                 using: .tcp)
 
         browser.browseResultsChangedHandler = { [weak self] results, _ in
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self?.update(with: results)
             }
         }
 
         browser.stateUpdateHandler = { [weak self] state in
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 self?.handleBrowserState(state)
             }
         }
@@ -92,7 +103,8 @@ final class BonjourBrowser: ObservableObject, BonjourBrowsing {
         resolveAttempts.removeAll()
         services.removeAll()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
             self?.start()
         }
     }
@@ -113,7 +125,7 @@ final class BonjourBrowser: ObservableObject, BonjourBrowsing {
 
                 if !existing.isResolved,
                    resolveConnections[name] == nil,
-                   resolveRetryWorkItems[name] == nil {
+                   resolveRetryTasks[name] == nil {
                     resolve(result, name: name, preferIPv4: true)
                 }
             } else {
@@ -159,52 +171,52 @@ final class BonjourBrowser: ObservableObject, BonjourBrowsing {
                                preferIPv4: preferIPv4)
 
         connection.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
+            Task { @MainActor in
+                guard let self else { return }
 
-            switch state {
-            case .ready:
-                guard self.finishResolutionConnection(connection, name: name) else { return }
+                switch state {
+                case .ready:
+                    guard self.finishResolutionConnection(connection, name: name) else { return }
 
-                guard case .hostPort(let host, let port)? = connection.currentPath?.remoteEndpoint else {
-                    AppLog.discovery.warning("Resolved service '\(name, privacy: .public)' without a hostPort endpoint")
+                    guard case .hostPort(let host, let port)? = connection.currentPath?.remoteEndpoint else {
+                        AppLog.discovery.warning("Resolved service '\(name, privacy: .public)' without a hostPort endpoint")
+                        if preferIPv4 {
+                            self.resolve(result, name: name, preferIPv4: false)
+                        } else {
+                            self.finishResolveFailure(result, name: name)
+                        }
+                        return
+                    }
+
+                    let hostString = Self.string(from: host)
+                    AppLog.discovery.info("Resolved service '\(name, privacy: .public)' to \(hostString, privacy: .public):\(port.rawValue, privacy: .public)")
+
+                    if let index = self.services.firstIndex(where: { $0.id == name }) {
+                        self.services[index].host = hostString
+                        self.services[index].port = port.rawValue
+                    }
+
+                    self.resolveAttempts[name] = nil
+
+                case .waiting(let error):
+                    AppLog.discovery.debug("Resolve waiting for '\(name, privacy: .public)': \(String(describing: error), privacy: .public)")
+
+                case .failed(let error):
+                    guard self.finishResolutionConnection(connection, name: name) else { return }
+                    AppLog.discovery.warning("Resolve failed for '\(name, privacy: .public)': \(String(describing: error), privacy: .public)")
+                    // IPv4 didn't work out; retry without the version constraint.
                     if preferIPv4 {
                         self.resolve(result, name: name, preferIPv4: false)
                     } else {
                         self.finishResolveFailure(result, name: name)
                     }
-                    return
+
+                case .cancelled:
+                    _ = self.finishResolutionConnection(connection, name: name)
+
+                default:
+                    break
                 }
-
-                let hostString = Self.string(from: host)
-                AppLog.discovery.info("Resolved service '\(name, privacy: .public)' to \(hostString, privacy: .public):\(port.rawValue, privacy: .public)")
-
-                DispatchQueue.main.async {
-                    if let index = self.services.firstIndex(where: { $0.id == name }) {
-                        self.services[index].host = hostString
-                        self.services[index].port = port.rawValue
-                    }
-                }
-
-                self.resolveAttempts[name] = nil
-
-            case .waiting(let error):
-                AppLog.discovery.debug("Resolve waiting for '\(name, privacy: .public)': \(String(describing: error), privacy: .public)")
-
-            case .failed(let error):
-                guard self.finishResolutionConnection(connection, name: name) else { return }
-                AppLog.discovery.warning("Resolve failed for '\(name, privacy: .public)': \(String(describing: error), privacy: .public)")
-                // IPv4 didn't work out; retry without the version constraint.
-                if preferIPv4 {
-                    self.resolve(result, name: name, preferIPv4: false)
-                } else {
-                    self.finishResolveFailure(result, name: name)
-                }
-
-            case .cancelled:
-                _ = self.finishResolutionConnection(connection, name: name)
-
-            default:
-                break
             }
         }
 
@@ -217,7 +229,10 @@ final class BonjourBrowser: ObservableObject, BonjourBrowsing {
                                         preferIPv4: Bool) {
         resolveTimeouts[name]?.cancel()
 
-        let timeout = DispatchWorkItem { [weak self, weak connection] in
+        let resolveTimeout = Int(resolveTimeout * 1000)
+        let timeout = Task { @MainActor [weak self, weak connection] in
+            try? await Task.sleep(for: .milliseconds(resolveTimeout))
+            guard !Task.isCancelled else { return }
             guard let self, let connection,
                   self.resolveConnections[name] === connection else { return }
 
@@ -233,8 +248,6 @@ final class BonjourBrowser: ObservableObject, BonjourBrowsing {
         }
 
         resolveTimeouts[name] = timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + resolveTimeout,
-                                      execute: timeout)
     }
 
     private func finishResolutionConnection(_ connection: NWConnection, name: String) -> Bool {
@@ -263,23 +276,24 @@ final class BonjourBrowser: ObservableObject, BonjourBrowsing {
     }
 
     private func scheduleResolveRetry(_ result: NWBrowser.Result, name: String) {
-        guard resolveRetryWorkItems[name] == nil else { return }
+        guard resolveRetryTasks[name] == nil else { return }
 
         AppLog.discovery.info("Scheduling resolve retry for '\(name, privacy: .public)'")
 
-        let retry = DispatchWorkItem { [weak self] in
+        let resolveRetryDelay = Int(resolveRetryDelay * 1000)
+        let retry = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(resolveRetryDelay))
+            guard !Task.isCancelled else { return }
             guard let self else { return }
 
-            self.resolveRetryWorkItems[name] = nil
+            self.resolveRetryTasks[name] = nil
 
             guard self.services.contains(where: { $0.id == name && !$0.isResolved }) else { return }
 
             self.resolve(result, name: name, preferIPv4: true)
         }
 
-        resolveRetryWorkItems[name] = retry
-        DispatchQueue.main.asyncAfter(deadline: .now() + resolveRetryDelay,
-                                      execute: retry)
+        resolveRetryTasks[name] = retry
     }
 
     private func cancelAllResolutions() {
@@ -289,8 +303,8 @@ final class BonjourBrowser: ObservableObject, BonjourBrowsing {
         resolveTimeouts.values.forEach { $0.cancel() }
         resolveTimeouts.removeAll()
 
-        resolveRetryWorkItems.values.forEach { $0.cancel() }
-        resolveRetryWorkItems.removeAll()
+        resolveRetryTasks.values.forEach { $0.cancel() }
+        resolveRetryTasks.removeAll()
     }
 
     private func cancelResolution(for name: String) {
@@ -300,8 +314,8 @@ final class BonjourBrowser: ObservableObject, BonjourBrowsing {
         resolveTimeouts[name]?.cancel()
         resolveTimeouts[name] = nil
 
-        resolveRetryWorkItems[name]?.cancel()
-        resolveRetryWorkItems[name] = nil
+        resolveRetryTasks[name]?.cancel()
+        resolveRetryTasks[name] = nil
     }
 
     private static func string(from host: NWEndpoint.Host) -> String {

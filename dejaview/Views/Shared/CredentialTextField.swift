@@ -56,9 +56,7 @@ struct CredentialTextField: UIViewRepresentable {
         textField.smartInsertDeleteType = .no
         textField.textContentType = nil
 
-        if #available(iOS 17.0, *) {
-            textField.inlinePredictionType = .no
-        }
+        textField.inlinePredictionType = .no
 
         textField.inputAssistantItem.leadingBarButtonGroups = []
         textField.inputAssistantItem.trailingBarButtonGroups = []

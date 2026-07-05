@@ -6,9 +6,9 @@ struct ContentView<Session: RemoteSessionControlling,
                    Store: MachineStoring,
                    Router: AppIntentRouting>: View {
     @StateObject private var session: Session
-    @StateObject private var browser: Browser
-    @StateObject private var store: Store
-    @StateObject private var intentRouter: Router
+    @State private var browser: Browser
+    @State private var store: Store
+    @State private var intentRouter: Router
 
     @State private var selectedSection: ConnectSection? = .hosts
     @State private var searchText = ""
@@ -24,9 +24,9 @@ struct ContentView<Session: RemoteSessionControlling,
 
     init(dependencies: AppDependencies<Session, Browser, Store, Router>) {
         _session = StateObject(wrappedValue: dependencies.makeSession())
-        _browser = StateObject(wrappedValue: dependencies.makeBrowser())
-        _store = StateObject(wrappedValue: dependencies.makeStore())
-        _intentRouter = StateObject(wrappedValue: dependencies.makeIntentRouter())
+        _browser = State(initialValue: dependencies.makeBrowser())
+        _store = State(initialValue: dependencies.makeStore())
+        _intentRouter = State(initialValue: dependencies.makeIntentRouter())
     }
 
     var body: some View {
@@ -131,11 +131,7 @@ struct ContentView<Session: RemoteSessionControlling,
 
     @ViewBuilder
     private var hostGrid: some View {
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 16) {
-                hostGridContent
-            }
-        } else {
+        GlassEffectContainer(spacing: 16) {
             hostGridContent
         }
     }
@@ -160,11 +156,7 @@ struct ContentView<Session: RemoteSessionControlling,
 
     @ViewBuilder
     private var nearbyGrid: some View {
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 16) {
-                nearbyGridContent
-            }
-        } else {
+        GlassEffectContainer(spacing: 16) {
             nearbyGridContent
         }
     }
@@ -199,7 +191,7 @@ struct ContentView<Session: RemoteSessionControlling,
             Link(destination: appleScreenSharingHelpURL) {
                 Label("Not seeing your Mac?", systemImage: "questionmark.circle")
             }
-            .glassButtonStyle()
+            .buttonStyle(.glass)
         }
         .padding(20)
         .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
@@ -224,7 +216,7 @@ struct ContentView<Session: RemoteSessionControlling,
         Button("New Machine", systemImage: "plus", action: addMachine)
             .font(.headline)
             .frame(maxWidth: .infinity, minHeight: 52)
-            .prominentGlassButtonStyle()
+            .buttonStyle(.glassProminent)
     }
 
     private var gridColumns: [GridItem] {
@@ -235,8 +227,8 @@ struct ContentView<Session: RemoteSessionControlling,
         guard isSearching else { return store.machines }
 
         return store.machines.filter { machine in
-            machine.displayName.localizedCaseInsensitiveContains(searchQuery) ||
-            machine.subtitle.localizedCaseInsensitiveContains(searchQuery)
+            machine.displayName.localizedStandardContains(searchQuery) ||
+            machine.subtitle.localizedStandardContains(searchQuery)
         }
     }
 
@@ -244,8 +236,8 @@ struct ContentView<Session: RemoteSessionControlling,
         guard isSearching else { return browser.services }
 
         return browser.services.filter { service in
-            service.name.localizedCaseInsensitiveContains(searchQuery) ||
-            service.host?.localizedCaseInsensitiveContains(searchQuery) == true
+            service.name.localizedStandardContains(searchQuery) ||
+            service.host?.localizedStandardContains(searchQuery) == true
         }
     }
 

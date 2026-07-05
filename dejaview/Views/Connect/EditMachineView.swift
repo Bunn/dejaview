@@ -4,7 +4,7 @@ import OSLog
 /// Sheet for creating or editing a saved machine.
 struct EditMachineView<Store: MachineStoring>: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var store: Store
+    let store: Store
     let connectWithoutSaving: ((SavedMachine, String) -> Void)?
 
     @State private var machine: SavedMachine

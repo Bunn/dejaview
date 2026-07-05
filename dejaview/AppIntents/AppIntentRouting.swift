@@ -1,4 +1,3 @@
-import Combine
 import Foundation
 
 enum AppIntentAction: Equatable {
@@ -15,7 +14,7 @@ struct AppIntentRequest: Equatable, Identifiable {
 }
 
 @MainActor
-protocol AppIntentRouting: ObservableObject, AnyObject {
+protocol AppIntentRouting: AnyObject {
     var request: AppIntentRequest? { get }
 
     func clear(_ handledRequest: AppIntentRequest)

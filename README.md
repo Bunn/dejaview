@@ -4,7 +4,7 @@ Starter iOS client for macOS Screen Sharing (VNC/RFB), built on [RoyalVNC](https
 
 ## Setup
 
-1. Open `dejaview.xcodeproj` in Xcode (16 or later).
+1. Open `dejaview.xcodeproj` in Xcode (26 or later).
 2. Wait for Xcode to resolve the RoyalVNC Swift package.
 3. Select the dejaview target → Signing & Capabilities → choose your development team.
 4. Build and run on a device or simulator on the same network as the target Mac.
@@ -17,7 +17,7 @@ On the target Mac: System Settings → General → Sharing → enable **Screen S
 - **Apple Remote Desktop auth**: enter your macOS username + password. If username is left blank and the server uses legacy VNC auth, only the password is sent.
 - **Rendering**: full-screen framebuffer drawn into a `CALayer` (aspect-fit), status bar and home indicator hidden.
 - **Input**: tap = left click, drag = click-drag; a floating glass pill toggles a keystroke bar and disconnects.
-- **Liquid Glass** styling on iOS 26+ (`glassEffect`, `.glass`/`.glassProminent` buttons) with material fallbacks for iOS 17+ (see `UIHelpers.swift`).
+- **Liquid Glass** styling using iOS 26-native `glassEffect`, `.glass`/`.glassProminent` buttons, and morphing glass controls.
 - **Options menu**: bottom-right glass button that morphs open (`GlassEffectContainer` + `glassEffectID`) with quality presets (24/16-bit color — no 8-bit, macOS's server resets those sessions) and clipboard sync. Settings are immutable per connection, so changes briefly reconnect (with a 2s grace period).
 - **Saved machines**: one-tap connect entries with editable name/host/port/login (`MachineStore`). Metadata, encrypted passwords, and connection history are stored in SwiftData with private CloudKit sync; passwords are also cached locally in the Keychain.
 

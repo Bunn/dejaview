@@ -1,10 +1,12 @@
 import Foundation
+import Observation
 
 @MainActor
-final class AppIntentRouter: ObservableObject, AppIntentRouting {
+@Observable
+final class AppIntentRouter: AppIntentRouting {
     static let shared = AppIntentRouter()
 
-    @Published private(set) var request: AppIntentRequest?
+    private(set) var request: AppIntentRequest?
 
     private init() {}
 

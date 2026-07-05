@@ -75,11 +75,11 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         private var touchMoved = false
         private var isDragging = false
         private var multiTouchActive = false
-        private var longPressWork: DispatchWorkItem?
+        private var longPressTask: Task<Void, Never>?
 
         // Direct-mode deferred press (avoids a stray left click when the
         // first finger of a two-finger gesture lands slightly early).
-        private var pendingPressWork: DispatchWorkItem?
+        private var pendingPressTask: Task<Void, Never>?
         private var pendingPressPoint: CGPoint?
         private var directPressed = false
 
@@ -691,13 +691,12 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         private func schedulePendingPress() {
             cancelPendingPress()
 
-            let work = DispatchWorkItem { [weak self] in
+            let pressDebounce = Int(pressDebounce * 1000)
+            pendingPressTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(pressDebounce))
+                guard !Task.isCancelled else { return }
                 self?.firePendingPressIfNeeded()
             }
-
-            pendingPressWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + pressDebounce,
-                                          execute: work)
         }
 
         private func firePendingPressIfNeeded() {
@@ -710,14 +709,17 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         }
 
         private func cancelPendingPress() {
-            pendingPressWork?.cancel()
-            pendingPressWork = nil
+            pendingPressTask?.cancel()
+            pendingPressTask = nil
         }
 
         // MARK: - Long-press → drag (trackpad mode)
 
         private func scheduleLongPress() {
-            let work = DispatchWorkItem { [weak self] in
+            let longPressDelay = Int(longPressDelay * 1000)
+            longPressTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(longPressDelay))
+                guard !Task.isCancelled else { return }
                 guard let self, !self.touchMoved, !self.isDragging,
                       !self.multiTouchActive else { return }
 
@@ -726,15 +728,11 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             }
-
-            longPressWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + longPressDelay,
-                                          execute: work)
         }
 
         private func cancelLongPress() {
-            longPressWork?.cancel()
-            longPressWork = nil
+            longPressTask?.cancel()
+            longPressTask = nil
         }
     }
 }

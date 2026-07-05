@@ -5,7 +5,9 @@ import RoyalVNCKit
 
 /// Owns the `VNCConnection`, implements its delegate, and publishes
 /// connection state + framebuffer images for SwiftUI to observe.
-final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling {
+/// RoyalVNCKit delegate callbacks are bridged back to the main actor before
+/// mutating session state.
+final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @unchecked Sendable {
     @Published var status: RemoteSessionStatus = .idle
     @Published var image: CGImage?
     @Published private(set) var quality: RemoteSessionQuality = .best
@@ -267,24 +269,31 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling {
 extension VNCSession: VNCConnectionDelegate {
     func connection(_ connection: VNCConnection,
                     stateDidChange connectionState: VNCConnection.ConnectionState) {
-        DispatchQueue.main.async {
-            AppLog.session.info("VNC connection state changed to \(String(describing: connectionState.status), privacy: .public)")
+        let status = connectionState.status
+        let userFacingMessage: String?
 
-            switch connectionState.status {
+        if let error = connectionState.error as? VNCError,
+           error.shouldDisplayToUser {
+            userFacingMessage = error.localizedDescription
+        } else {
+            userFacingMessage = nil
+        }
+
+        let errorDescription = connectionState.error?.localizedDescription
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            AppLog.session.info("VNC connection state changed to \(String(describing: status), privacy: .public)")
+
+            switch status {
             case .connecting:
                 self.status = .connecting
             case .connected:
                 self.status = .connected
             case .disconnected:
-                var message: String?
-
-                if let error = connectionState.error as? VNCError,
-                   error.shouldDisplayToUser {
-                    message = error.localizedDescription
-                }
-
-                if let error = connectionState.error {
-                    AppLog.session.error("VNC disconnected with error: \(error.localizedDescription, privacy: .public)")
+                if let errorDescription {
+                    AppLog.session.error("VNC disconnected with error: \(errorDescription, privacy: .public)")
                 } else {
                     AppLog.session.info("VNC disconnected without error")
                 }
@@ -303,7 +312,9 @@ extension VNCSession: VNCConnectionDelegate {
                     self.status = .connecting
                     AppLog.session.info("Scheduling reconnect after settings change")
 
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(for: .seconds(2))
+                        guard let self else { return }
                         // Bail if the user dismissed the session meanwhile.
                         guard self.status == .connecting, self.connection == nil else { return }
 
@@ -313,7 +324,7 @@ extension VNCSession: VNCConnectionDelegate {
                                      password: self.password)
                     }
                 } else {
-                    self.status = .disconnected(message)
+                    self.status = .disconnected(userFacingMessage)
                 }
             default:
                 break
@@ -340,8 +351,11 @@ extension VNCSession: VNCConnectionDelegate {
 
     func connection(_ connection: VNCConnection,
                     didCreateFramebuffer framebuffer: VNCFramebuffer) {
-        DispatchQueue.main.async {
-            let cgImage = framebuffer.cgImage
+        let cgImage = framebuffer.cgImage
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
             self.image = cgImage
 
             if let cgImage {
@@ -359,8 +373,11 @@ extension VNCSession: VNCConnectionDelegate {
 
     func connection(_ connection: VNCConnection,
                     didResizeFramebuffer framebuffer: VNCFramebuffer) {
-        DispatchQueue.main.async {
-            let cgImage = framebuffer.cgImage
+        let cgImage = framebuffer.cgImage
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
             self.image = cgImage
 
             if let cgImage {
@@ -377,8 +394,10 @@ extension VNCSession: VNCConnectionDelegate {
                     width: UInt16, height: UInt16) {
         // TODO: For better performance, only invalidate the dirty rect
         // (x/y/width/height) instead of republishing the whole image.
-        DispatchQueue.main.async {
-            self.image = framebuffer.cgImage
+        let cgImage = framebuffer.cgImage
+
+        Task { @MainActor [weak self] in
+            self?.image = cgImage
         }
     }
 

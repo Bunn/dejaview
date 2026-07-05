@@ -66,7 +66,7 @@ struct SessionView<Session: RemoteSessionControlling>: View {
                     session.disconnect()
                     dismiss()
                 }
-                .glassButtonStyle()
+                .buttonStyle(.glass)
             }
 
         case .connected:
@@ -97,13 +97,13 @@ struct SessionView<Session: RemoteSessionControlling>: View {
                         AppLog.ui.info("Disconnected session close button tapped")
                         dismiss()
                     }
-                    .glassButtonStyle()
+                    .buttonStyle(.glass)
 
                     Button("Reconnect") {
                         AppLog.ui.info("Reconnect button tapped")
                         session.retryConnect()
                     }
-                    .prominentGlassButtonStyle()
+                    .buttonStyle(.glassProminent)
                 }
                 .padding(.top, 8)
             }

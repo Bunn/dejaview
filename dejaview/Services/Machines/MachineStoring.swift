@@ -1,8 +1,7 @@
-import Combine
 import Foundation
 
 @MainActor
-protocol MachineStoring: ObservableObject, AnyObject {
+protocol MachineStoring: AnyObject {
     var machines: [SavedMachine] { get }
     var recentConnections: [ConnectionHistoryEntry] { get }
 

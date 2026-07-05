@@ -1,7 +1,9 @@
 import Foundation
 import SwiftData
 
-final class SwiftDataSavedMachineRepository: SavedMachineRepository {
+/// Creates short-lived model contexts per operation and uses a lock around
+/// one-time migration, so the shared repository can cross Swift 6 boundaries.
+final class SwiftDataSavedMachineRepository: SavedMachineRepository, @unchecked Sendable {
     static let shared = SwiftDataSavedMachineRepository()
 
     private let modelContainer: ModelContainer

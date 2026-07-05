@@ -2,10 +2,8 @@ import SwiftUI
 
 /// Floating Liquid Glass options button (bottom-right of the session).
 ///
-/// On iOS 26+ the option buttons morph in and out of the main button using
-/// the standard Liquid Glass animation (`GlassEffectContainer` +
-/// `glassEffectID`). Older systems get a material fallback with a spring
-/// transition.
+/// The option buttons morph in and out of the main button using
+/// the standard Liquid Glass animation (`GlassEffectContainer` + `glassEffectID`).
 struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
     @ObservedObject var session: Session
 
@@ -13,17 +11,6 @@ struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
     @Namespace private var glassNamespace
 
     var body: some View {
-        if #available(iOS 26.0, *) {
-            modernMenu
-        } else {
-            legacyMenu
-        }
-    }
-
-    // MARK: - iOS 26+: Liquid Glass morph
-
-    @available(iOS 26.0, *)
-    private var modernMenu: some View {
         GlassEffectContainer(spacing: 14) {
             VStack(alignment: .trailing, spacing: 14) {
                 if isExpanded {
@@ -63,48 +50,6 @@ struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
             }
         }
         .animation(.smooth(duration: 0.4), value: isExpanded)
-    }
-
-    // MARK: - iOS 17–18 fallback
-
-    private var legacyMenu: some View {
-        VStack(alignment: .trailing, spacing: 12) {
-            if isExpanded {
-                Group {
-                    ForEach(RemoteSessionQuality.allCases) { quality in
-                        optionRow(title: quality.rawValue,
-                                  icon: quality.icon,
-                                  isSelected: session.quality == quality) {
-                            session.setQuality(quality)
-                            collapse()
-                        }
-                        .background(.ultraThinMaterial, in: Capsule())
-                    }
-
-                    optionRow(title: "Trackpad Mode",
-                              icon: "cursorarrow.motionlines",
-                              isSelected: session.touchMode == .trackpad) {
-                        session.toggleTouchMode()
-                        collapse()
-                    }
-                    .background(.ultraThinMaterial, in: Capsule())
-
-                    optionRow(title: "Clipboard Sync",
-                              icon: "doc.on.clipboard",
-                              isSelected: session.isClipboardSyncEnabled) {
-                        session.toggleClipboardSync()
-                        collapse()
-                    }
-                    .background(.ultraThinMaterial, in: Capsule())
-                }
-                .transition(.scale(scale: 0.6, anchor: .bottomTrailing)
-                    .combined(with: .opacity))
-            }
-
-            mainButton
-                .background(.ultraThinMaterial, in: Circle())
-        }
-        .animation(.spring(duration: 0.35), value: isExpanded)
     }
 
     // MARK: - Pieces

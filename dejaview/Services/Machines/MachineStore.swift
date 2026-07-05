@@ -1,14 +1,16 @@
 import Foundation
+import Observation
 import OSLog
 
 /// Persists saved machines and their Keychain-backed passwords.
 @MainActor
-final class MachineStore: ObservableObject, MachineStoring {
-    @Published private(set) var machines: [SavedMachine] = []
-    @Published private(set) var recentConnections: [ConnectionHistoryEntry] = []
+@Observable
+final class MachineStore: MachineStoring {
+    private(set) var machines: [SavedMachine] = []
+    private(set) var recentConnections: [ConnectionHistoryEntry] = []
 
-    private let repository: SavedMachineRepository
-    private let recentConnectionLimit = 50
+    @ObservationIgnored private let repository: SavedMachineRepository
+    @ObservationIgnored private let recentConnectionLimit = 50
 
     init(repository: SavedMachineRepository = SwiftDataSavedMachineRepository.shared) {
         self.repository = repository

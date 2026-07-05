@@ -10,7 +10,7 @@ import UIKit
 ///             cursor, long-press then drag = click-drag (relative)
 ///
 /// Two fingers (both modes):
-/// - two-finger tap  = right click
+/// - two-finger tap / trackpad secondary tap = right click
 /// - two-finger drag = scroll wheel (natural direction)
 struct RemoteDesktopView: UIViewRepresentable {
     @ObservedObject var session: VNCSession
@@ -79,6 +79,14 @@ struct RemoteDesktopView: UIViewRepresentable {
                                                       action: #selector(handleTwoFingerTap(_:)))
             twoFingerTap.numberOfTouchesRequired = 2
             addGestureRecognizer(twoFingerTap)
+
+            let pointerSecondaryTap = UITapGestureRecognizer(target: self,
+                                                             action: #selector(handlePointerSecondaryTap(_:)))
+            pointerSecondaryTap.allowedTouchTypes = [
+                NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)
+            ]
+            pointerSecondaryTap.buttonMaskRequired = .secondary
+            addGestureRecognizer(pointerSecondaryTap)
 
             let twoFingerPan = UIPanGestureRecognizer(target: self,
                                                       action: #selector(handleTwoFingerPan(_:)))
@@ -152,11 +160,27 @@ struct RemoteDesktopView: UIViewRepresentable {
         // MARK: - Two-finger gestures
 
         @objc private func handleTwoFingerTap(_ gesture: UITapGestureRecognizer) {
+            rightClick(from: gesture, usesPointerLocation: false)
+        }
+
+        @objc private func handlePointerSecondaryTap(_ gesture: UITapGestureRecognizer) {
+            rightClick(from: gesture, usesPointerLocation: true)
+        }
+
+        private func rightClick(from gesture: UITapGestureRecognizer,
+                                usesPointerLocation: Bool) {
             guard let session else { return }
+
+            becomeFirstResponder()
 
             switch session.touchMode {
             case .trackpad:
-                session.rightClickAtCursor()
+                if usesPointerLocation,
+                   let point = framebufferPoint(for: gesture.location(in: self)) {
+                    session.rightClick(at: point)
+                } else {
+                    session.rightClickAtCursor()
+                }
 
             case .direct:
                 if let point = framebufferPoint(for: gesture.location(in: self)) {

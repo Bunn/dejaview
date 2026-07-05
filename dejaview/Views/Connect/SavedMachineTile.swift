@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SavedMachineTile: View {
     let machine: SavedMachine
+    let reachabilityStatus: MachineReachabilityStatus
     let connect: () -> Void
     let edit: () -> Void
 
@@ -26,6 +27,8 @@ struct SavedMachineTile: View {
                             .font(.subheadline.monospaced())
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+
+                        ReachabilityStatusBadge(status: reachabilityStatus)
                     }
 
                     Spacer(minLength: 8)

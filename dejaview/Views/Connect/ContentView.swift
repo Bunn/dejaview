@@ -19,8 +19,11 @@ struct ContentView<Session: RemoteSessionControlling,
     @State private var editingPassword = ""
     @State private var pendingConnectionMachine: SavedMachine?
     @State private var pendingConnectionPassword = ""
+    @State private var machineReachabilityStatuses: [UUID: MachineReachabilityStatus] = [:]
+    @State private var machineReachabilityEndpoints: [UUID: String] = [:]
 
     private let appleScreenSharingHelpURL = URL(string: "https://support.apple.com/guide/mac-help/turn-screen-sharing-on-or-off-mh11848/mac")!
+    private let reachabilityRefreshInterval: Duration = .seconds(30)
 
     init(dependencies: AppDependencies<Session, Browser, Store, Router>) {
         _session = StateObject(wrappedValue: dependencies.makeSession())
@@ -69,6 +72,9 @@ struct ContentView<Session: RemoteSessionControlling,
         .onChange(of: intentRouter.request) { _, request in
             guard let request else { return }
             handleIntentRequest(request)
+        }
+        .task(id: machineReachabilitySignature) {
+            await monitorSavedMachineReachability()
         }
     }
 
@@ -139,7 +145,8 @@ struct ContentView<Session: RemoteSessionControlling,
     private var hostGridContent: some View {
         LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 16) {
             ForEach(filteredMachines) { machine in
-                SavedMachineTile(machine: machine) {
+                SavedMachineTile(machine: machine,
+                                 reachabilityStatus: reachabilityStatus(for: machine)) {
                     connect(to: machine)
                 } edit: {
                     edit(machine)
@@ -249,6 +256,12 @@ struct ContentView<Session: RemoteSessionControlling,
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var machineReachabilitySignature: String {
+        store.machines
+            .map { "\($0.id.uuidString)|\(reachabilityEndpointKey(for: $0))" }
+            .joined(separator: "\n")
+    }
+
     // MARK: - Actions
 
     private func addMachine() {
@@ -281,6 +294,9 @@ struct ContentView<Session: RemoteSessionControlling,
         AppLog.ui.info("Refreshing nearby Mac discovery")
         browser.stop()
         browser.start()
+        Task {
+            await refreshSavedMachineReachability()
+        }
     }
 
     private func queueDirectConnection(machine: SavedMachine, password: String) {
@@ -377,6 +393,96 @@ struct ContentView<Session: RemoteSessionControlling,
                         password: password)
 
         isSessionPresented = true
+    }
+
+    // MARK: - Reachability
+
+    private func reachabilityStatus(for machine: SavedMachine) -> MachineReachabilityStatus {
+        machineReachabilityStatuses[machine.id] ?? .checking
+    }
+
+    @MainActor
+    private func monitorSavedMachineReachability() async {
+        pruneSavedMachineReachabilityState()
+
+        while !Task.isCancelled {
+            await refreshSavedMachineReachability()
+
+            guard !Task.isCancelled else { break }
+
+            try? await Task.sleep(for: reachabilityRefreshInterval)
+        }
+    }
+
+    @MainActor
+    private func refreshSavedMachineReachability() async {
+        let machines = store.machines
+
+        guard !machines.isEmpty else {
+            machineReachabilityStatuses.removeAll()
+            machineReachabilityEndpoints.removeAll()
+            return
+        }
+
+        prepareReachabilityState(for: machines)
+
+        await withTaskGroup(of: (UUID, String, MachineReachabilityStatus).self) { group in
+            for machine in machines {
+                let id = machine.id
+                let host = machine.host.trimmingCharacters(in: .whitespacesAndNewlines)
+                let port = machine.port
+                let endpointKey = reachabilityEndpointKey(host: host, port: port)
+
+                group.addTask {
+                    let status = await MachineReachabilityProber.status(host: host, port: port)
+                    return (id, endpointKey, status)
+                }
+            }
+
+            for await (id, endpointKey, status) in group {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return
+                }
+
+                guard machineReachabilityEndpoints[id] == endpointKey else { continue }
+
+                machineReachabilityStatuses[id] = status
+            }
+        }
+    }
+
+    private func prepareReachabilityState(for machines: [SavedMachine]) {
+        let activeIDs = Set(machines.map(\.id))
+
+        machineReachabilityStatuses = machineReachabilityStatuses.filter { activeIDs.contains($0.key) }
+        machineReachabilityEndpoints = machineReachabilityEndpoints.filter { activeIDs.contains($0.key) }
+
+        for machine in machines {
+            let endpointKey = reachabilityEndpointKey(for: machine)
+
+            if machineReachabilityEndpoints[machine.id] != endpointKey {
+                machineReachabilityEndpoints[machine.id] = endpointKey
+                machineReachabilityStatuses[machine.id] = .checking
+            } else if machineReachabilityStatuses[machine.id] == nil {
+                machineReachabilityStatuses[machine.id] = .checking
+            }
+        }
+    }
+
+    private func pruneSavedMachineReachabilityState() {
+        let activeIDs = Set(store.machines.map(\.id))
+
+        machineReachabilityStatuses = machineReachabilityStatuses.filter { activeIDs.contains($0.key) }
+        machineReachabilityEndpoints = machineReachabilityEndpoints.filter { activeIDs.contains($0.key) }
+    }
+
+    private func reachabilityEndpointKey(for machine: SavedMachine) -> String {
+        reachabilityEndpointKey(host: machine.host, port: machine.port)
+    }
+
+    private func reachabilityEndpointKey(host: String, port: UInt16) -> String {
+        "\(host.trimmingCharacters(in: .whitespacesAndNewlines)):\(port)"
     }
 }
 

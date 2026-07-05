@@ -24,6 +24,8 @@ struct DiscoveredServiceTile: View {
                         .font(service.isResolved ? .subheadline.monospaced() : .subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+
+                    ReachabilityStatusBadge(status: reachabilityStatus)
                 }
 
                 Spacer(minLength: 8)
@@ -49,5 +51,9 @@ struct DiscoveredServiceTile: View {
         }
 
         return "\(host):\(String(port))"
+    }
+
+    private var reachabilityStatus: MachineReachabilityStatus {
+        service.isResolved ? .reachable : .checking
     }
 }

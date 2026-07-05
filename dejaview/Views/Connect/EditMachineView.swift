@@ -5,7 +5,7 @@ import OSLog
 struct EditMachineView<Store: MachineStoring>: View {
     @Environment(\.dismiss) private var dismiss
     let store: Store
-    let connectWithoutSaving: ((SavedMachine, String) -> Void)?
+    let connectAfterDismiss: ((SavedMachine, String) -> Void)?
 
     @State private var machine: SavedMachine
     @State private var name: String
@@ -19,9 +19,9 @@ struct EditMachineView<Store: MachineStoring>: View {
     init(store: Store,
          machine: SavedMachine,
          password: String,
-         connectWithoutSaving: ((SavedMachine, String) -> Void)? = nil) {
+         connectAfterDismiss: ((SavedMachine, String) -> Void)? = nil) {
         self.store = store
-        self.connectWithoutSaving = connectWithoutSaving
+        self.connectAfterDismiss = connectAfterDismiss
         isNew = !store.contains(machine)
         _machine = State(initialValue: machine)
         _name = State(initialValue: machine.name)
@@ -56,8 +56,13 @@ struct EditMachineView<Store: MachineStoring>: View {
                     CredentialTextField("Password", text: $password, isSecure: true)
                 }
 
-                if isNew, connectWithoutSaving != nil {
+                if isNew, connectAfterDismiss != nil {
                     Section {
+                        Button("Save and Connect", systemImage: "checkmark.circle") {
+                            saveAndConnect()
+                        }
+                        .disabled(!canSubmit)
+
                         Button("Connect Without Saving", systemImage: "display") {
                             connectNow()
                         }
@@ -109,7 +114,21 @@ struct EditMachineView<Store: MachineStoring>: View {
     private func connectNow() {
         let prepared = preparedMachine()
         AppLog.ui.info("Connecting without saving from editor to \(prepared.host, privacy: .public):\(prepared.port, privacy: .public)")
-        connectWithoutSaving?(prepared, password)
+        connectAfterDismiss?(prepared, password)
+        dismiss()
+    }
+
+    private func saveAndConnect() {
+        let prepared = preparedMachine()
+        AppLog.ui.info("Saving and connecting from editor; isNew=\(self.isNew, privacy: .public) host=\(prepared.host, privacy: .public):\(prepared.port, privacy: .public)")
+
+        if isNew {
+            store.add(prepared, password: password)
+        } else {
+            store.update(prepared, password: password)
+        }
+
+        connectAfterDismiss?(prepared, password)
         dismiss()
     }
 

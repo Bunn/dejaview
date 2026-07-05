@@ -1,4 +1,4 @@
-# Deja View (dejaview)
+# Glassy View
 
 Starter iOS client for macOS Screen Sharing (VNC/RFB), built on [RoyalVNC](https://github.com/royalapplications/royalvnc).
 

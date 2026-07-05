@@ -30,8 +30,11 @@ private final class MachineReachabilityProbe {
     func start() async -> MachineReachabilityStatus {
         guard !host.isEmpty,
               let networkPort = NWEndpoint.Port(rawValue: port) else {
+            AppLog.reachability.info("Skipping saved machine reachability probe for invalid endpoint; host=\(self.host, privacy: .public) port=\(self.port, privacy: .public)")
             return .unreachable
         }
+
+        AppLog.reachability.debug("Starting TCP reachability probe; endpoint=\(self.endpointDescription, privacy: .public)")
 
         return await withCheckedContinuation { continuation in
             self.continuation = continuation
@@ -51,6 +54,7 @@ private final class MachineReachabilityProbe {
             timeoutTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: timeout)
                 guard !Task.isCancelled else { return }
+                self?.logTimeout()
                 self?.finish(.unreachable)
             }
 
@@ -59,6 +63,8 @@ private final class MachineReachabilityProbe {
     }
 
     private func handle(_ state: NWConnection.State) {
+        AppLog.reachability.debug("TCP reachability probe state changed; endpoint=\(self.endpointDescription, privacy: .public) state=\(Self.description(for: state), privacy: .public)")
+
         switch state {
         case .ready:
             finish(.reachable)
@@ -72,14 +78,45 @@ private final class MachineReachabilityProbe {
     }
 
     private func finish(_ status: MachineReachabilityStatus) {
-        guard !didFinish else { return }
+        guard !didFinish else {
+            AppLog.reachability.debug("Ignoring duplicate TCP reachability probe finish; endpoint=\(self.endpointDescription, privacy: .public) status=\(status.title, privacy: .public)")
+            return
+        }
 
         didFinish = true
+        AppLog.reachability.info("Finished TCP reachability probe; endpoint=\(self.endpointDescription, privacy: .public) status=\(status.title, privacy: .public)")
         timeoutTask?.cancel()
         timeoutTask = nil
         connection?.cancel()
         connection = nil
         continuation?.resume(returning: status)
         continuation = nil
+    }
+
+    private var endpointDescription: String {
+        "\(host):\(port)"
+    }
+
+    private func logTimeout() {
+        AppLog.reachability.info("TCP reachability probe timed out; endpoint=\(self.endpointDescription, privacy: .public)")
+    }
+
+    private static func description(for state: NWConnection.State) -> String {
+        switch state {
+        case .setup:
+            "setup"
+        case .waiting(let error):
+            "waiting(\(String(describing: error)))"
+        case .preparing:
+            "preparing"
+        case .ready:
+            "ready"
+        case .failed(let error):
+            "failed(\(String(describing: error)))"
+        case .cancelled:
+            "cancelled"
+        @unknown default:
+            "unknown"
+        }
     }
 }

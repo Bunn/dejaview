@@ -17,7 +17,7 @@ struct ConnectSidebarView: View {
                 }
             }
         }
-        .navigationTitle("Deja View")
+        .navigationTitle("Glassy View")
         .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 340)
     }
 

@@ -2,7 +2,7 @@ import AppIntents
 
 struct ConnectSavedMachineIntent: AppIntent {
     static let title: LocalizedStringResource = "Connect to Mac"
-    static let description = IntentDescription("Open DejaView and connect to a saved Mac.")
+    static let description = IntentDescription("Open Glassy View and connect to a saved Mac.")
     static let openAppWhenRun = true
 
     @Parameter(title: "Mac")

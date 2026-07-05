@@ -178,30 +178,37 @@ struct SessionView<Session: RemoteSessionControlling>: View {
     }
 
     private var inputBar: some View {
-        HStack(spacing: 10) {
-            TextField("Type to send to the Mac…", text: $textToSend)
-                .textFieldStyle(.plain)
-                .focused($inputFocused)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .onSubmit {
-                    AppLog.ui.debug("Software input submitted; characterCount=\(self.textToSend.count, privacy: .public)")
-                    session.sendText(textToSend)
-                    textToSend = ""
-                    inputFocused = true
-                }
-
-            Button {
-                AppLog.ui.debug("Software return key tapped")
-                session.sendReturn()
-            } label: {
-                Image(systemName: "return")
-                    .fontWeight(.medium)
+        VStack(spacing: 8) {
+            SessionShortcutStrip(session: session) {
+                inputFocused = true
             }
+
+            HStack(spacing: 10) {
+                TextField("Type to send to the Mac…", text: $textToSend)
+                    .textFieldStyle(.plain)
+                    .focused($inputFocused)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onSubmit {
+                        AppLog.ui.debug("Software input submitted; characterCount=\(self.textToSend.count, privacy: .public)")
+                        session.sendText(textToSend)
+                        textToSend = ""
+                        inputFocused = true
+                    }
+
+                Button {
+                    AppLog.ui.debug("Software return key tapped")
+                    session.sendReturn()
+                    inputFocused = true
+                } label: {
+                    Image(systemName: "return")
+                        .fontWeight(.medium)
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+            .liquidGlass(in: Capsule())
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .liquidGlass(in: Capsule())
         .padding(.horizontal, 16)
         .padding(.bottom, 12)
     }

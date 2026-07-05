@@ -5,10 +5,13 @@ struct ContentView<Session: RemoteSessionControlling,
                    Browser: BonjourBrowsing,
                    Store: MachineStoring,
                    Router: AppIntentRouting>: View {
+    @Environment(\.scenePhase) private var scenePhase
+
     @StateObject private var session: Session
     @State private var browser: Browser
     @State private var store: Store
     @State private var intentRouter: Router
+    @State private var networkPathObserver = NetworkPathObserver()
 
     @State private var selectedSection: ConnectSection? = .hosts
     @State private var searchText = ""
@@ -19,8 +22,11 @@ struct ContentView<Session: RemoteSessionControlling,
     @State private var editingPassword = ""
     @State private var pendingConnectionMachine: SavedMachine?
     @State private var pendingConnectionPassword = ""
+    @State private var pendingDeletionMachine: SavedMachine?
+    @State private var isDeleteConfirmationPresented = false
     @State private var machineReachabilityStatuses: [UUID: MachineReachabilityStatus] = [:]
     @State private var machineReachabilityEndpoints: [UUID: String] = [:]
+    @State private var reachabilityProbeGeneration = 0
 
     private let appleScreenSharingHelpURL = URL(string: "https://support.apple.com/guide/mac-help/turn-screen-sharing-on-or-off-mh11848/mac")!
     private let reachabilityRefreshInterval: Duration = .seconds(30)
@@ -49,7 +55,7 @@ struct ContentView<Session: RemoteSessionControlling,
                         Button("Add Host", systemImage: "plus", action: addMachine)
 
                         Menu("More", systemImage: "ellipsis.circle") {
-                            Button("Refresh Nearby Macs", systemImage: "arrow.clockwise", action: refreshNearbyMacs)
+                            Button("Refresh Machines", systemImage: "arrow.clockwise", action: refreshMachines)
                         }
                     }
                 }
@@ -62,16 +68,47 @@ struct ContentView<Session: RemoteSessionControlling,
             EditMachineView(store: store,
                             machine: machine,
                             password: editingPassword,
-                            connectWithoutSaving: queueDirectConnection)
+                            connectAfterDismiss: queueConnectionAfterEditor)
+        }
+        .alert("Delete Machine?",
+               isPresented: $isDeleteConfirmationPresented,
+               presenting: pendingDeletionMachine) { machine in
+            Button("Delete", role: .destructive) {
+                delete(machine)
+            }
+
+            Button("Cancel", role: .cancel) {
+                pendingDeletionMachine = nil
+            }
+        } message: { machine in
+            Text("This removes \(machine.displayName) from your saved machines.")
         }
         .onAppear {
             AppLog.ui.info("Connect view appeared; starting nearby Mac discovery")
             browser.start()
+            networkPathObserver.start()
             handlePendingIntentRequest()
+        }
+        .onDisappear {
+            networkPathObserver.stop()
         }
         .onChange(of: intentRouter.request) { _, request in
             guard let request else { return }
             handleIntentRequest(request)
+        }
+        .onChange(of: networkPathObserver.snapshot) { oldSnapshot, newSnapshot in
+            guard oldSnapshot != nil, let newSnapshot else { return }
+
+            Task {
+                await refreshForNetworkPathChange(newSnapshot)
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active else { return }
+
+            Task {
+                await refreshMachineList(reason: "sceneBecameActive", marksMachinesChecking: false)
+            }
         }
         .task(id: machineReachabilitySignature) {
             await monitorSavedMachineReachability()
@@ -91,6 +128,9 @@ struct ContentView<Session: RemoteSessionControlling,
 
             ScrollView {
                 detailContentStack
+            }
+            .refreshable {
+                await refreshMachineList(reason: "pullToRefresh", marksMachinesChecking: false)
             }
         }
     }
@@ -150,6 +190,8 @@ struct ContentView<Session: RemoteSessionControlling,
                     connect(to: machine)
                 } edit: {
                     edit(machine)
+                } delete: {
+                    confirmDelete(machine)
                 }
             }
 
@@ -290,17 +332,45 @@ struct ContentView<Session: RemoteSessionControlling,
         editingMachine = machine
     }
 
-    private func refreshNearbyMacs() {
-        AppLog.ui.info("Refreshing nearby Mac discovery")
-        browser.stop()
-        browser.start()
+    private func confirmDelete(_ machine: SavedMachine) {
+        AppLog.ui.info("Showing delete confirmation for '\(machine.displayName, privacy: .public)'")
+        pendingDeletionMachine = machine
+        isDeleteConfirmationPresented = true
+    }
+
+    private func delete(_ machine: SavedMachine) {
+        AppLog.ui.info("Deleting saved machine from card menu; id=\(machine.id.uuidString, privacy: .public) name=\(machine.displayName, privacy: .public)")
+        pendingDeletionMachine = nil
+        isDeleteConfirmationPresented = false
+
+        if editingMachine?.id == machine.id {
+            editingMachine = nil
+        }
+
+        if pendingConnectionMachine?.id == machine.id {
+            pendingConnectionMachine = nil
+            pendingConnectionPassword = ""
+        }
+
+        machineReachabilityStatuses[machine.id] = nil
+        machineReachabilityEndpoints[machine.id] = nil
+        store.delete(machine)
+    }
+
+    private func refreshMachines() {
         Task {
-            await refreshSavedMachineReachability()
+            await refreshMachineList(reason: "toolbar", marksMachinesChecking: false)
         }
     }
 
-    private func queueDirectConnection(machine: SavedMachine, password: String) {
-        AppLog.ui.info("Queued direct connection without saving for \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
+    private func refreshNearbyMacs() {
+        Task {
+            await refreshMachineList(reason: "nearby", marksMachinesChecking: false)
+        }
+    }
+
+    private func queueConnectionAfterEditor(machine: SavedMachine, password: String) {
+        AppLog.ui.info("Queued connection after editor dismiss for \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
         pendingConnectionMachine = machine
         pendingConnectionPassword = password
     }
@@ -369,7 +439,9 @@ struct ContentView<Session: RemoteSessionControlling,
         case .disconnect:
             disconnectFromIntent()
         case .reloadMachines:
-            store.reload()
+            Task {
+                await refreshMachineList(reason: "appIntentReloadMachines", marksMachinesChecking: false)
+            }
         }
 
         intentRouter.clear(request)
@@ -403,28 +475,49 @@ struct ContentView<Session: RemoteSessionControlling,
 
     @MainActor
     private func monitorSavedMachineReachability() async {
+        AppLog.reachability.info("Starting saved machine reachability monitor")
         pruneSavedMachineReachabilityState()
 
         while !Task.isCancelled {
+            AppLog.reachability.debug("Saved machine reachability monitor tick")
             await refreshSavedMachineReachability()
 
             guard !Task.isCancelled else { break }
 
             try? await Task.sleep(for: reachabilityRefreshInterval)
         }
+
+        AppLog.reachability.info("Saved machine reachability monitor stopped")
     }
 
     @MainActor
     private func refreshSavedMachineReachability() async {
+        await refreshSavedMachineReachability(showChecking: false)
+    }
+
+    @MainActor
+    private func refreshSavedMachineReachability(showChecking: Bool) async {
         let machines = store.machines
 
         guard !machines.isEmpty else {
+            AppLog.reachability.info("Skipping saved machine reachability refresh because there are no saved machines")
             machineReachabilityStatuses.removeAll()
             machineReachabilityEndpoints.removeAll()
             return
         }
 
+        let previousGeneration = reachabilityProbeGeneration
+        AppLog.reachability.info("Starting saved machine reachability refresh; count=\(machines.count, privacy: .public) showChecking=\(showChecking, privacy: .public) previousGeneration=\(previousGeneration, privacy: .public)")
         prepareReachabilityState(for: machines)
+
+        if showChecking {
+            AppLog.reachability.debug("Marking saved machines as checking before probe refresh")
+            machines.forEach { machineReachabilityStatuses[$0.id] = .checking }
+        }
+
+        reachabilityProbeGeneration += 1
+        let generation = reachabilityProbeGeneration
+        let startedAt = ContinuousClock.now
 
         await withTaskGroup(of: (UUID, String, MachineReachabilityStatus).self) { group in
             for machine in machines {
@@ -433,38 +526,88 @@ struct ContentView<Session: RemoteSessionControlling,
                 let port = machine.port
                 let endpointKey = reachabilityEndpointKey(host: host, port: port)
 
+                AppLog.reachability.debug("Queueing saved machine reachability probe; generation=\(generation, privacy: .public) id=\(id.uuidString, privacy: .public) name=\(machine.displayName, privacy: .public) endpoint=\(endpointKey, privacy: .public)")
                 group.addTask {
+                    await MainActor.run {
+                        AppLog.reachability.debug("Launching saved machine reachability probe; generation=\(generation, privacy: .public) id=\(id.uuidString, privacy: .public) endpoint=\(endpointKey, privacy: .public)")
+                    }
                     let status = await MachineReachabilityProber.status(host: host, port: port)
                     return (id, endpointKey, status)
                 }
             }
 
             for await (id, endpointKey, status) in group {
-                guard !Task.isCancelled else {
+                guard reachabilityProbeGeneration == generation else {
+                    AppLog.reachability.info("Discarding saved machine reachability generation because a newer refresh started; generation=\(generation, privacy: .public) currentGeneration=\(reachabilityProbeGeneration, privacy: .public)")
                     group.cancelAll()
                     return
                 }
 
-                guard machineReachabilityEndpoints[id] == endpointKey else { continue }
+                if Task.isCancelled {
+                    AppLog.reachability.info("Saved machine reachability refresh task is cancelled, applying completed result anyway; generation=\(generation, privacy: .public) id=\(id.uuidString, privacy: .public) endpoint=\(endpointKey, privacy: .public)")
+                }
+
+                guard machineReachabilityEndpoints[id] == endpointKey else {
+                    let currentEndpoint = machineReachabilityEndpoints[id] ?? "missing"
+                    AppLog.reachability.info("Skipping stale saved machine reachability result; generation=\(generation, privacy: .public) id=\(id.uuidString, privacy: .public) resultEndpoint=\(endpointKey, privacy: .public) currentEndpoint=\(currentEndpoint, privacy: .public) status=\(status.title, privacy: .public)")
+                    continue
+                }
 
                 machineReachabilityStatuses[id] = status
+                AppLog.reachability.info("Saved machine reachability result applied; generation=\(generation, privacy: .public) id=\(id.uuidString, privacy: .public) endpoint=\(endpointKey, privacy: .public) status=\(status.title, privacy: .public)")
             }
+        }
+
+        let elapsed = String(describing: startedAt.duration(to: .now))
+        AppLog.reachability.info("Finished saved machine reachability refresh; generation=\(generation, privacy: .public) elapsed=\(elapsed, privacy: .public) taskCancelled=\(Task.isCancelled, privacy: .public)")
+    }
+
+    @MainActor
+    private func refreshMachineList(reason: String, marksMachinesChecking: Bool) async {
+        AppLog.ui.info("Refreshing machine list; reason=\(reason, privacy: .public) marksMachinesChecking=\(marksMachinesChecking, privacy: .public)")
+        store.reload()
+        restartNearbyMacDiscovery()
+        await refreshSavedMachineReachability(showChecking: marksMachinesChecking)
+    }
+
+    @MainActor
+    private func refreshForNetworkPathChange(_ snapshot: NetworkPathSnapshot) async {
+        AppLog.ui.info("Network path changed; \(snapshot.logDescription, privacy: .public)")
+        store.reload()
+        restartNearbyMacDiscovery()
+
+        switch snapshot.status {
+        case .satisfied:
+            await refreshSavedMachineReachability(showChecking: true)
+        case .requiresConnection, .unsatisfied:
+            setSavedMachineReachabilityStatuses(.unreachable)
         }
     }
 
     private func prepareReachabilityState(for machines: [SavedMachine]) {
         let activeIDs = Set(machines.map(\.id))
+        let previousStatusCount = machineReachabilityStatuses.count
+        let previousEndpointCount = machineReachabilityEndpoints.count
 
         machineReachabilityStatuses = machineReachabilityStatuses.filter { activeIDs.contains($0.key) }
         machineReachabilityEndpoints = machineReachabilityEndpoints.filter { activeIDs.contains($0.key) }
+
+        let prunedStatusCount = previousStatusCount - machineReachabilityStatuses.count
+        let prunedEndpointCount = previousEndpointCount - machineReachabilityEndpoints.count
+        if prunedStatusCount > 0 || prunedEndpointCount > 0 {
+            AppLog.reachability.debug("Pruned saved machine reachability state; statusCount=\(prunedStatusCount, privacy: .public) endpointCount=\(prunedEndpointCount, privacy: .public)")
+        }
 
         for machine in machines {
             let endpointKey = reachabilityEndpointKey(for: machine)
 
             if machineReachabilityEndpoints[machine.id] != endpointKey {
+                let previousEndpoint = machineReachabilityEndpoints[machine.id] ?? "missing"
+                AppLog.reachability.debug("Saved machine reachability endpoint changed; id=\(machine.id.uuidString, privacy: .public) name=\(machine.displayName, privacy: .public) previous=\(previousEndpoint, privacy: .public) current=\(endpointKey, privacy: .public)")
                 machineReachabilityEndpoints[machine.id] = endpointKey
                 machineReachabilityStatuses[machine.id] = .checking
             } else if machineReachabilityStatuses[machine.id] == nil {
+                AppLog.reachability.debug("Saved machine reachability status missing; id=\(machine.id.uuidString, privacy: .public) name=\(machine.displayName, privacy: .public) endpoint=\(endpointKey, privacy: .public)")
                 machineReachabilityStatuses[machine.id] = .checking
             }
         }
@@ -475,6 +618,21 @@ struct ContentView<Session: RemoteSessionControlling,
 
         machineReachabilityStatuses = machineReachabilityStatuses.filter { activeIDs.contains($0.key) }
         machineReachabilityEndpoints = machineReachabilityEndpoints.filter { activeIDs.contains($0.key) }
+    }
+
+    private func restartNearbyMacDiscovery() {
+        browser.stop()
+        browser.start()
+    }
+
+    private func setSavedMachineReachabilityStatuses(_ status: MachineReachabilityStatus) {
+        reachabilityProbeGeneration += 1
+        AppLog.reachability.info("Setting all saved machine reachability statuses; status=\(status.title, privacy: .public) generation=\(reachabilityProbeGeneration, privacy: .public) count=\(store.machines.count, privacy: .public)")
+        prepareReachabilityState(for: store.machines)
+
+        for machine in store.machines {
+            machineReachabilityStatuses[machine.id] = status
+        }
     }
 
     private func reachabilityEndpointKey(for machine: SavedMachine) -> String {

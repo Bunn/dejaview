@@ -5,6 +5,7 @@ struct SavedMachineTile: View {
     let reachabilityStatus: MachineReachabilityStatus
     let connect: () -> Void
     let edit: () -> Void
+    let delete: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
@@ -43,14 +44,30 @@ struct SavedMachineTile: View {
             .buttonStyle(.plain)
             .accessibilityHint("Connects to this saved machine.")
 
-            Menu("Machine Options", systemImage: "ellipsis.circle") {
-                Button("Edit", systemImage: "slider.horizontal.3", action: edit)
+            Menu {
+                machineActions
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.title3)
+                    .symbolRenderingMode(.hierarchical)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
             }
-            .labelStyle(.iconOnly)
-            .frame(width: 44, height: 44)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Machine Options")
         }
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
         .glassPanel(cornerRadius: 24, isInteractive: true)
+        .contextMenu {
+            machineActions
+        }
+    }
+
+    @ViewBuilder
+    private var machineActions: some View {
+        Button("Edit", systemImage: "slider.horizontal.3", action: edit)
+
+        Button("Delete", systemImage: "trash", role: .destructive, action: delete)
     }
 }

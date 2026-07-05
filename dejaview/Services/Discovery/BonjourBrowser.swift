@@ -2,20 +2,10 @@ import Foundation
 import Network
 import OSLog
 
-/// A Screen Sharing server discovered via Bonjour, resolved to host + port.
-struct DiscoveredService: Identifiable, Equatable {
-    let id: String
-    let name: String
-    var host: String?
-    var port: UInt16?
-
-    var isResolved: Bool { host != nil && port != nil }
-}
-
 /// Discovers Screen Sharing / VNC servers (`_rfb._tcp`) on the local network
 /// and eagerly resolves each one to a concrete IP address + port, preferring
 /// IPv4 (link-local IPv6 addresses often fail to connect).
-final class BonjourBrowser: ObservableObject {
+final class BonjourBrowser: ObservableObject, BonjourBrowsing {
     @Published var services: [DiscoveredService] = []
 
     private var browser: NWBrowser?

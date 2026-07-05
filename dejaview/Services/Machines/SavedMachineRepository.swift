@@ -1,86 +1,20 @@
 import Foundation
-import OSLog
 import Security
 
-/// A saved connection. Metadata lives in UserDefaults; the password is
-/// stored separately in the Keychain, keyed by the machine's id.
-struct SavedMachine: Identifiable, Codable, Equatable {
-    var id = UUID()
-    var name: String
-    var host: String
-    var port: UInt16 = 5900
-    var username: String
-
-    var displayName: String {
-        name.isEmpty ? host : name
-    }
-
-    var subtitle: String {
-        let hostPort = "\(host):\(String(port))"
-        return username.isEmpty ? hostPort : "\(username)@\(hostPort)"
-    }
+protocol SavedMachineRepository {
+    func loadMachines() -> [SavedMachine]
+    func saveMachines(_ machines: [SavedMachine])
+    func password(for id: UUID) -> String?
+    func setPassword(_ password: String, for id: UUID)
+    func deletePassword(for id: UUID)
 }
 
-/// Persists saved machines and their Keychain-backed passwords.
-final class MachineStore: ObservableObject {
-    @Published private(set) var machines: [SavedMachine] = []
+struct UserDefaultsSavedMachineRepository: SavedMachineRepository {
+    static let shared = UserDefaultsSavedMachineRepository()
 
-    private static let defaultsKey = "savedMachines"
+    private let defaultsKey = "savedMachines"
 
-    init() {
-        machines = Self.savedMachines()
-    }
-
-    func reload() {
-        machines = Self.savedMachines()
-    }
-
-    func add(_ machine: SavedMachine, password: String) {
-        AppLog.storage.info("Adding saved machine '\(machine.displayName, privacy: .public)' at \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
-        machines.append(machine)
-        persist()
-        Keychain.setPassword(password, for: machine.id)
-    }
-
-    func update(_ machine: SavedMachine, password: String) {
-        guard let index = machines.firstIndex(where: { $0.id == machine.id }) else {
-            AppLog.storage.warning("Attempted to update missing machine id=\(machine.id.uuidString, privacy: .public)")
-            return
-        }
-
-        AppLog.storage.info("Updating saved machine '\(machine.displayName, privacy: .public)' at \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
-        machines[index] = machine
-        persist()
-        Keychain.setPassword(password, for: machine.id)
-    }
-
-    func delete(_ machine: SavedMachine) {
-        AppLog.storage.info("Deleting saved machine '\(machine.displayName, privacy: .public)'")
-        machines.removeAll { $0.id == machine.id }
-        persist()
-        Keychain.deletePassword(for: machine.id)
-    }
-
-    func contains(_ machine: SavedMachine) -> Bool {
-        machines.contains { $0.id == machine.id }
-    }
-
-    func machine(withID id: UUID) -> SavedMachine? {
-        machines.first { $0.id == id }
-    }
-
-    func password(for machine: SavedMachine) -> String {
-        guard let password = Keychain.password(for: machine.id) else {
-            AppLog.storage.debug("No Keychain password found for '\(machine.displayName, privacy: .public)'")
-            return ""
-        }
-
-        return password
-    }
-
-    // MARK: - Persistence
-
-    static func savedMachines() -> [SavedMachine] {
+    func loadMachines() -> [SavedMachine] {
         guard let data = UserDefaults.standard.data(forKey: defaultsKey) else {
             AppLog.storage.info("No saved machines found in UserDefaults")
             return []
@@ -96,20 +30,29 @@ final class MachineStore: ObservableObject {
         }
     }
 
-    private func persist() {
+    func saveMachines(_ machines: [SavedMachine]) {
         do {
             let data = try JSONEncoder().encode(machines)
-            UserDefaults.standard.set(data, forKey: Self.defaultsKey)
-            AppLog.storage.debug("Persisted \(self.machines.count, privacy: .public) saved machines")
+            UserDefaults.standard.set(data, forKey: defaultsKey)
+            AppLog.storage.debug("Persisted \(machines.count, privacy: .public) saved machines")
         } catch {
             AppLog.storage.error("Failed to encode saved machines: \(error.localizedDescription, privacy: .public)")
         }
     }
+
+    func password(for id: UUID) -> String? {
+        KeychainPasswordStore.password(for: id)
+    }
+
+    func setPassword(_ password: String, for id: UUID) {
+        KeychainPasswordStore.setPassword(password, for: id)
+    }
+
+    func deletePassword(for id: UUID) {
+        KeychainPasswordStore.deletePassword(for: id)
+    }
 }
-
-// MARK: - Keychain
-
-private enum Keychain {
+private enum KeychainPasswordStore {
     private static let service = "com.example.dejaview.passwords"
 
     private static func baseQuery(for id: UUID) -> [String: Any] {

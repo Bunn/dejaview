@@ -99,7 +99,8 @@ struct AddSavedMachineIntent: AppIntent {
                                    port: UInt16(port),
                                    username: trimmedUsername)
 
-        MachineStore().add(machine, password: password ?? "")
+        MachineStore(repository: UserDefaultsSavedMachineRepository.shared)
+            .add(machine, password: password ?? "")
 
         await MainActor.run {
             AppIntentRouter.shared.requestMachinesReload()

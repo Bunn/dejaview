@@ -5,46 +5,12 @@ import RoyalVNCKit
 
 /// Owns the `VNCConnection`, implements its delegate, and publishes
 /// connection state + framebuffer images for SwiftUI to observe.
-final class VNCSession: NSObject, ObservableObject {
-    enum Status: Equatable {
-        case idle
-        case connecting
-        case connected
-        case disconnected(String?)
-    }
-
-    /// Quality presets trading color depth for bandwidth/speed.
-    ///
-    /// Note: no 8-bit preset — macOS's built-in Screen Sharing server
-    /// misbehaves with 8-bit sessions (connections get reset), so the
-    /// fastest supported preset is 16-bit color.
-    enum Quality: String, CaseIterable, Identifiable {
-        case best = "Best Quality"
-        case fast = "Faster (16-bit)"
-
-        var id: String { rawValue }
-
-        var icon: String {
-            switch self {
-            case .best: return "sparkles"
-            case .fast: return "hare"
-            }
-        }
-    }
-
-    /// How touches map to the remote pointer.
-    enum TouchMode {
-        /// The cursor jumps to wherever you touch (absolute).
-        case direct
-        /// Dragging moves the cursor from where it is, like a trackpad (relative).
-        case trackpad
-    }
-
-    @Published var status: Status = .idle
+final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling {
+    @Published var status: RemoteSessionStatus = .idle
     @Published var image: CGImage?
-    @Published private(set) var quality: Quality = .best
+    @Published private(set) var quality: RemoteSessionQuality = .best
     @Published private(set) var isClipboardSyncEnabled = true
-    @Published private(set) var touchMode: TouchMode = .direct
+    @Published private(set) var touchMode: RemoteTouchMode = .direct
 
     /// Last known remote cursor position (framebuffer coordinates).
     private(set) var cursorLocation: CGPoint = .zero
@@ -113,7 +79,7 @@ final class VNCSession: NSObject, ObservableObject {
     // `VNCConnection.Settings` is immutable, so changing quality or clipboard
     // sync mid-session briefly reconnects with the new settings.
 
-    func setQuality(_ newQuality: Quality) {
+    func setQuality(_ newQuality: RemoteSessionQuality) {
         guard newQuality != quality else { return }
 
         AppLog.session.info("Changing quality from \(self.quality.rawValue, privacy: .public) to \(newQuality.rawValue, privacy: .public)")
@@ -234,14 +200,7 @@ final class VNCSession: NSObject, ObservableObject {
         rightClick(at: cursorLocation)
     }
 
-    enum ScrollDirection {
-        case up
-        case down
-        case left
-        case right
-    }
-
-    func scroll(_ direction: ScrollDirection, steps: UInt32 = 1) {
+    func scroll(_ direction: RemoteScrollDirection, steps: UInt32 = 1) {
         guard steps > 0 else { return }
 
         AppLog.input.debug("Scroll \(String(describing: direction), privacy: .public) steps=\(steps, privacy: .public) at x=\(self.cursorLocation.x, privacy: .public) y=\(self.cursorLocation.y, privacy: .public)")

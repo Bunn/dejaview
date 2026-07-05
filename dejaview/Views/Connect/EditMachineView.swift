@@ -2,9 +2,9 @@ import SwiftUI
 import OSLog
 
 /// Sheet for creating or editing a saved machine.
-struct EditMachineView: View {
+struct EditMachineView<Store: MachineStoring>: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var store: MachineStore
+    @ObservedObject var store: Store
     let connectWithoutSaving: ((SavedMachine, String) -> Void)?
 
     @State private var machine: SavedMachine
@@ -16,7 +16,7 @@ struct EditMachineView: View {
 
     private let isNew: Bool
 
-    init(store: MachineStore,
+    init(store: Store,
          machine: SavedMachine,
          password: String,
          connectWithoutSaving: ((SavedMachine, String) -> Void)? = nil) {

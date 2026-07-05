@@ -2,8 +2,8 @@ import SwiftUI
 import OSLog
 
 /// Full-screen remote session with floating Liquid Glass controls.
-struct SessionView: View {
-    @ObservedObject var session: VNCSession
+struct SessionView<Session: RemoteSessionControlling>: View {
+    @ObservedObject var session: Session
     @Environment(\.dismiss) private var dismiss
 
     @State private var showsInputBar = false

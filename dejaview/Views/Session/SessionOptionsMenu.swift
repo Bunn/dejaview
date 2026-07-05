@@ -6,8 +6,8 @@ import SwiftUI
 /// the standard Liquid Glass animation (`GlassEffectContainer` +
 /// `glassEffectID`). Older systems get a material fallback with a spring
 /// transition.
-struct SessionOptionsMenu: View {
-    @ObservedObject var session: VNCSession
+struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
+    @ObservedObject var session: Session
 
     @State private var isExpanded = false
     @Namespace private var glassNamespace
@@ -27,7 +27,7 @@ struct SessionOptionsMenu: View {
         GlassEffectContainer(spacing: 14) {
             VStack(alignment: .trailing, spacing: 14) {
                 if isExpanded {
-                    ForEach(VNCSession.Quality.allCases) { quality in
+                    ForEach(RemoteSessionQuality.allCases) { quality in
                         optionRow(title: quality.rawValue,
                                   icon: quality.icon,
                                   isSelected: session.quality == quality) {
@@ -71,7 +71,7 @@ struct SessionOptionsMenu: View {
         VStack(alignment: .trailing, spacing: 12) {
             if isExpanded {
                 Group {
-                    ForEach(VNCSession.Quality.allCases) { quality in
+                    ForEach(RemoteSessionQuality.allCases) { quality in
                         optionRow(title: quality.rawValue,
                                   icon: quality.icon,
                                   isSelected: session.quality == quality) {

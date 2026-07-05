@@ -1,11 +1,14 @@
 import SwiftUI
 import OSLog
 
-struct ContentView: View {
-    @StateObject private var session = VNCSession()
-    @StateObject private var browser = BonjourBrowser()
-    @StateObject private var store = MachineStore()
-    @StateObject private var intentRouter = AppIntentRouter.shared
+struct ContentView<Session: RemoteSessionControlling,
+                   Browser: BonjourBrowsing,
+                   Store: MachineStoring,
+                   Router: AppIntentRouting>: View {
+    @StateObject private var session: Session
+    @StateObject private var browser: Browser
+    @StateObject private var store: Store
+    @StateObject private var intentRouter: Router
 
     @State private var selectedSection: ConnectSection? = .hosts
     @State private var searchText = ""
@@ -17,7 +20,14 @@ struct ContentView: View {
     @State private var pendingConnectionMachine: SavedMachine?
     @State private var pendingConnectionPassword = ""
 
-    private static let appleScreenSharingHelpURL = URL(string: "https://support.apple.com/guide/mac-help/turn-screen-sharing-on-or-off-mh11848/mac")!
+    private let appleScreenSharingHelpURL = URL(string: "https://support.apple.com/guide/mac-help/turn-screen-sharing-on-or-off-mh11848/mac")!
+
+    init(dependencies: AppDependencies<Session, Browser, Store, Router>) {
+        _session = StateObject(wrappedValue: dependencies.makeSession())
+        _browser = StateObject(wrappedValue: dependencies.makeBrowser())
+        _store = StateObject(wrappedValue: dependencies.makeStore())
+        _intentRouter = StateObject(wrappedValue: dependencies.makeIntentRouter())
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -186,7 +196,7 @@ struct ContentView: View {
                 Spacer()
             }
 
-            Link(destination: Self.appleScreenSharingHelpURL) {
+            Link(destination: appleScreenSharingHelpURL) {
                 Label("Not seeing your Mac?", systemImage: "questionmark.circle")
             }
             .glassButtonStyle()
@@ -340,7 +350,7 @@ struct ContentView: View {
         handleIntentRequest(request)
     }
 
-    private func handleIntentRequest(_ request: AppIntentRouter.Request) {
+    private func handleIntentRequest(_ request: AppIntentRequest) {
         switch request.action {
         case .connect(let machineID):
             connectFromIntent(machineID: machineID)
@@ -374,6 +384,16 @@ struct ContentView: View {
                         password: password)
 
         isSessionPresented = true
+    }
+}
+
+extension ContentView where Session == VNCSession,
+                            Browser == BonjourBrowser,
+                            Store == MachineStore,
+                            Router == AppIntentRouter {
+    @MainActor
+    init() {
+        self.init(dependencies: .live)
     }
 }
 

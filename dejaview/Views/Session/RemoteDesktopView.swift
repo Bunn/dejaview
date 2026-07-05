@@ -4,7 +4,7 @@ import UIKit
 /// Renders the remote framebuffer into a CALayer and maps touches
 /// to VNC pointer events.
 ///
-/// One finger (see `VNCSession.TouchMode`):
+/// One finger (see `RemoteTouchMode`):
 /// - direct:   tap = click where you touch, drag = click-drag (absolute)
 /// - trackpad: drag moves the cursor from where it is, tap = click at the
 ///             cursor, long-press then drag = click-drag (relative)
@@ -12,8 +12,8 @@ import UIKit
 /// Two fingers (both modes):
 /// - two-finger tap / trackpad secondary tap = right click
 /// - two-finger drag = scroll wheel (natural direction)
-struct RemoteDesktopView: UIViewRepresentable {
-    @ObservedObject var session: VNCSession
+struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable {
+    @ObservedObject var session: Session
 
     func makeUIView(context: Context) -> ScreenView {
         let view = ScreenView()
@@ -30,7 +30,7 @@ struct RemoteDesktopView: UIViewRepresentable {
     }
 
     final class ScreenView: UIView, UIGestureRecognizerDelegate {
-        weak var session: VNCSession?
+        weak var session: (any RemoteSessionInputControlling)?
 
         private var imageSize: CGSize = .zero
         private weak var pointerScrollPan: UIPanGestureRecognizer?
@@ -247,7 +247,7 @@ struct RemoteDesktopView: UIViewRepresentable {
             let horizontalSteps = Int(abs(accumulator.x) / scrollStep)
 
             if horizontalSteps > 0 {
-                let direction: VNCSession.ScrollDirection =
+                let direction: RemoteScrollDirection =
                     accumulator.x > 0 ? .left : .right
 
                 session?.scroll(direction, steps: UInt32(horizontalSteps))
@@ -260,7 +260,7 @@ struct RemoteDesktopView: UIViewRepresentable {
 
             if verticalSteps > 0 {
                 // Natural direction: fingers down -> content follows (wheel up).
-                let direction: VNCSession.ScrollDirection =
+                let direction: RemoteScrollDirection =
                     accumulator.y > 0 ? .up : .down
 
                 session?.scroll(direction, steps: UInt32(verticalSteps))
@@ -348,7 +348,7 @@ struct RemoteDesktopView: UIViewRepresentable {
             }
         }
 
-        private func sendText(for key: UIKey, through session: VNCSession) -> Bool {
+        private func sendText(for key: UIKey, through session: any RemoteSessionInputControlling) -> Bool {
             let shortcutModifiers: UIKeyModifierFlags = [.command, .control, .alternate]
             let shouldForwardShortcut = !key.modifierFlags.intersection(shortcutModifiers).isEmpty
 

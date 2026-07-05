@@ -378,6 +378,7 @@ struct ContentView<Session: RemoteSessionControlling,
 
     private func connect(to machine: SavedMachine, password: String) {
         AppLog.ui.info("Presenting session for \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
+        store.recordConnection(to: machine)
         session.connect(host: machine.host,
                         port: machine.port,
                         username: machine.username,

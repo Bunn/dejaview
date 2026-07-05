@@ -18,7 +18,7 @@ extension AppDependencies where Session == VNCSession,
 
         return AppDependencies(makeSession: VNCSession.init,
                                makeBrowser: BonjourBrowser.init,
-                               makeStore: { MachineStore(repository: UserDefaultsSavedMachineRepository.shared) },
+                               makeStore: { MachineStore(repository: SwiftDataSavedMachineRepository.shared) },
                                makeIntentRouter: { intentRouter })
     }
 }

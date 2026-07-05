@@ -3,7 +3,11 @@ import Security
 
 protocol SavedMachineRepository {
     func loadMachines() -> [SavedMachine]
-    func saveMachines(_ machines: [SavedMachine])
+    func addMachine(_ machine: SavedMachine)
+    func updateMachine(_ machine: SavedMachine)
+    func deleteMachine(withID id: UUID)
+    func loadRecentConnections(limit: Int) -> [ConnectionHistoryEntry]
+    func recordConnection(to machine: SavedMachine, at date: Date)
     func password(for id: UUID) -> String?
     func setPassword(_ password: String, for id: UUID)
     func deletePassword(for id: UUID)
@@ -30,7 +34,38 @@ struct UserDefaultsSavedMachineRepository: SavedMachineRepository {
         }
     }
 
-    func saveMachines(_ machines: [SavedMachine]) {
+    func addMachine(_ machine: SavedMachine) {
+        var machines = loadMachines()
+        machines.append(machine)
+        saveMachines(machines)
+    }
+
+    func updateMachine(_ machine: SavedMachine) {
+        var machines = loadMachines()
+
+        guard let index = machines.firstIndex(where: { $0.id == machine.id }) else {
+            machines.append(machine)
+            saveMachines(machines)
+            return
+        }
+
+        machines[index] = machine
+        saveMachines(machines)
+    }
+
+    func deleteMachine(withID id: UUID) {
+        var machines = loadMachines()
+        machines.removeAll { $0.id == id }
+        saveMachines(machines)
+    }
+
+    func loadRecentConnections(limit: Int) -> [ConnectionHistoryEntry] {
+        []
+    }
+
+    func recordConnection(to machine: SavedMachine, at date: Date) {}
+
+    private func saveMachines(_ machines: [SavedMachine]) {
         do {
             let data = try JSONEncoder().encode(machines)
             UserDefaults.standard.set(data, forKey: defaultsKey)

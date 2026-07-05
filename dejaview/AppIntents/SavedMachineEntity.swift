@@ -35,7 +35,9 @@ struct SavedMachineEntity: AppEntity, Identifiable {
 
 struct SavedMachineQuery: EntityQuery, EntityStringQuery {
     func entities(for identifiers: [SavedMachineEntity.ID]) async throws -> [SavedMachineEntity] {
-        MachineStore.savedMachines()
+        await MainActor.run {
+            MachineStore.savedMachines()
+        }
             .filter { identifiers.contains($0.id) }
             .map(SavedMachineEntity.init)
     }
@@ -47,19 +49,25 @@ struct SavedMachineQuery: EntityQuery, EntityStringQuery {
             return try await suggestedEntities()
         }
 
-        return MachineStore.savedMachines()
-            .filter { machine in
-                machine.displayName.localizedCaseInsensitiveContains(query) ||
-                machine.subtitle.localizedCaseInsensitiveContains(query)
-            }
-            .map(SavedMachineEntity.init)
+        return await MainActor.run {
+            MachineStore.savedMachines()
+                .filter { machine in
+                    machine.displayName.localizedStandardContains(query) ||
+                    machine.subtitle.localizedStandardContains(query)
+                }
+                .map(SavedMachineEntity.init)
+        }
     }
 
     func suggestedEntities() async throws -> [SavedMachineEntity] {
-        MachineStore.savedMachines().map(SavedMachineEntity.init)
+        await MainActor.run {
+            MachineStore.savedMachines().map(SavedMachineEntity.init)
+        }
     }
 
     func defaultResult() async -> SavedMachineEntity? {
-        MachineStore.savedMachines().first.map(SavedMachineEntity.init)
+        await MainActor.run {
+            MachineStore.savedMachines().first.map(SavedMachineEntity.init)
+        }
     }
 }

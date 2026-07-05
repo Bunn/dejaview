@@ -2,44 +2,48 @@ import Foundation
 import OSLog
 
 /// Persists saved machines and their Keychain-backed passwords.
+@MainActor
 final class MachineStore: ObservableObject, MachineStoring {
     @Published private(set) var machines: [SavedMachine] = []
+    @Published private(set) var recentConnections: [ConnectionHistoryEntry] = []
 
     private let repository: SavedMachineRepository
+    private let recentConnectionLimit = 50
 
-    init(repository: SavedMachineRepository = UserDefaultsSavedMachineRepository.shared) {
+    init(repository: SavedMachineRepository = SwiftDataSavedMachineRepository.shared) {
         self.repository = repository
-        machines = repository.loadMachines()
+        reload()
     }
 
     func reload() {
         machines = repository.loadMachines()
+        recentConnections = repository.loadRecentConnections(limit: recentConnectionLimit)
     }
 
     func add(_ machine: SavedMachine, password: String) {
         AppLog.storage.info("Adding saved machine '\(machine.displayName, privacy: .public)' at \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
-        machines.append(machine)
-        persist()
+        repository.addMachine(machine)
         repository.setPassword(password, for: machine.id)
+        reload()
     }
 
     func update(_ machine: SavedMachine, password: String) {
-        guard let index = machines.firstIndex(where: { $0.id == machine.id }) else {
+        guard contains(machine) else {
             AppLog.storage.warning("Attempted to update missing machine id=\(machine.id.uuidString, privacy: .public)")
             return
         }
 
         AppLog.storage.info("Updating saved machine '\(machine.displayName, privacy: .public)' at \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
-        machines[index] = machine
-        persist()
+        repository.updateMachine(machine)
         repository.setPassword(password, for: machine.id)
+        reload()
     }
 
     func delete(_ machine: SavedMachine) {
         AppLog.storage.info("Deleting saved machine '\(machine.displayName, privacy: .public)'")
-        machines.removeAll { $0.id == machine.id }
-        persist()
+        repository.deleteMachine(withID: machine.id)
         repository.deletePassword(for: machine.id)
+        reload()
     }
 
     func contains(_ machine: SavedMachine) -> Bool {
@@ -59,13 +63,14 @@ final class MachineStore: ObservableObject, MachineStoring {
         return password
     }
 
-    // MARK: - Persistence
-
-    static func savedMachines(repository: SavedMachineRepository = UserDefaultsSavedMachineRepository.shared) -> [SavedMachine] {
-        repository.loadMachines()
+    func recordConnection(to machine: SavedMachine) {
+        repository.recordConnection(to: machine, at: .now)
+        reload()
     }
 
-    private func persist() {
-        repository.saveMachines(machines)
+    // MARK: - Persistence
+
+    static func savedMachines(repository: SavedMachineRepository = SwiftDataSavedMachineRepository.shared) -> [SavedMachine] {
+        repository.loadMachines()
     }
 }

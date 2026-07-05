@@ -1,8 +1,10 @@
 import Combine
 import Foundation
 
+@MainActor
 protocol MachineStoring: ObservableObject, AnyObject {
     var machines: [SavedMachine] { get }
+    var recentConnections: [ConnectionHistoryEntry] { get }
 
     func reload()
     func add(_ machine: SavedMachine, password: String)
@@ -11,4 +13,5 @@ protocol MachineStoring: ObservableObject, AnyObject {
     func contains(_ machine: SavedMachine) -> Bool
     func machine(withID id: UUID) -> SavedMachine?
     func password(for machine: SavedMachine) -> String
+    func recordConnection(to machine: SavedMachine)
 }

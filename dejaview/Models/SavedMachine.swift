@@ -8,6 +8,7 @@ struct SavedMachine: Identifiable, Codable, Equatable {
     var host: String
     var port: UInt16 = 5900
     var username: String
+    var lastConnectedAt: Date?
 
     var displayName: String {
         name.isEmpty ? host : name

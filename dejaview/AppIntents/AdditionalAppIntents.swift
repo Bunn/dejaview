@@ -81,6 +81,7 @@ struct AddSavedMachineIntent: AppIntent {
         Summary("Add \(\.$host)")
     }
 
+    @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -99,12 +100,10 @@ struct AddSavedMachineIntent: AppIntent {
                                    port: UInt16(port),
                                    username: trimmedUsername)
 
-        MachineStore(repository: UserDefaultsSavedMachineRepository.shared)
+        MachineStore(repository: SwiftDataSavedMachineRepository.shared)
             .add(machine, password: password ?? "")
 
-        await MainActor.run {
-            AppIntentRouter.shared.requestMachinesReload()
-        }
+        AppIntentRouter.shared.requestMachinesReload()
 
         return .result(dialog: "Saved \(machine.displayName).")
     }

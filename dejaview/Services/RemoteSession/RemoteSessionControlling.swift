@@ -23,7 +23,13 @@ protocol RemoteSessionInputControlling: AnyObject {
 
 protocol RemoteSessionControlling: ObservableObject, RemoteSessionInputControlling {
     var status: RemoteSessionStatus { get }
+
+    /// Current framebuffer. Deliberately NOT part of `objectWillChange`:
+    /// frames arrive at display rate, and invalidating SwiftUI for each one
+    /// causes constant re-layout (which, among other things, makes presented
+    /// menus flicker). Observe `imagePublisher` instead.
     var image: CGImage? { get }
+    var imagePublisher: AnyPublisher<CGImage?, Never> { get }
     var quality: RemoteSessionQuality { get }
     var isClipboardSyncEnabled: Bool { get }
 

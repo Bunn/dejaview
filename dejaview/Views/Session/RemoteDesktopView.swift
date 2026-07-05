@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -17,7 +18,10 @@ import UIKit
 /// When follow-cursor is enabled, zoomed trackpad/hover cursor movement
 /// recenters the visible stream around the remote cursor.
 struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable {
-    @ObservedObject var session: Session
+    // Deliberately NOT @ObservedObject: frames are pushed straight to the
+    // view via `imagePublisher` (see makeUIView), so SwiftUI never needs to
+    // re-render this representable at framebuffer rate.
+    let session: Session
     @Binding var zoomScale: CGFloat
     var followsCursor: Bool
 
@@ -25,16 +29,22 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         let view = ScreenView()
         view.session = session
         view.onZoomScaleChanged = context.coordinator.setZoomScale(_:)
-        Task { @MainActor in
-            view.becomeFirstResponder()
-        }
+
+        // Frames bypass SwiftUI entirely: publisher → CALayer.
+        // CurrentValueSubject replays the latest frame on subscription.
+        context.coordinator.imageSubscription = session.imagePublisher
+            .sink { [weak view] image in
+                view?.display(image: image)
+            }
+
+        // First responder is claimed in didMoveToWindow, once the view is
+        // actually in a key window.
         return view
     }
 
     func updateUIView(_ uiView: ScreenView, context: Context) {
         context.coordinator.zoomScale = $zoomScale
         uiView.session = session
-        uiView.display(image: session.image)
         uiView.setZoomScale(zoomScale, notify: false)
         uiView.setFollowsCursor(followsCursor)
     }
@@ -45,6 +55,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
     final class Coordinator {
         var zoomScale: Binding<CGFloat>
+        var imageSubscription: AnyCancellable?
 
         init(zoomScale: Binding<CGFloat>) {
             self.zoomScale = zoomScale
@@ -101,6 +112,17 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
         override var canBecomeFirstResponder: Bool {
             true
+        }
+
+        /// Grabs keyboard focus for hardware-keyboard forwarding — but only
+        /// while our window is key. Stealing first responder while another
+        /// window is presenting (e.g. the session options menu, which iOS 26
+        /// hosts in its own window) dismisses that presentation and triggers
+        /// endless keyboard-geometry conversions between the two windows
+        /// ("Invalid UIScreen coordinate space conversion" log spam).
+        private func becomeFirstResponderIfAppropriate() {
+            guard let window, window.isKeyWindow, !isFirstResponder else { return }
+            becomeFirstResponder()
         }
 
         override init(frame: CGRect) {
@@ -161,9 +183,54 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         override func didMoveToWindow() {
             super.didMoveToWindow()
 
+            registerKeyWindowObservers()
+
+            // Unconditional: this only fires when entering the hierarchy
+            // (the window may not be key yet mid-transition), never while
+            // the options menu is presented.
             if window != nil {
                 becomeFirstResponder()
             }
+        }
+
+        // MARK: - Key-window tracking
+        //
+        // While another window is key (e.g. the session options menu, which
+        // iOS 26 hosts in its own window), holding first responder makes the
+        // input system track keyboard geometry across both windows, spamming
+        // "Invalid UIScreen coordinate space conversion". Let go of keyboard
+        // focus while we're not the key window and re-grab it afterwards.
+
+        private var keyWindowObservers: [NSObjectProtocol] = []
+
+        private func registerKeyWindowObservers() {
+            unregisterKeyWindowObservers()
+
+            guard let window else { return }
+
+            let center = NotificationCenter.default
+
+            keyWindowObservers = [
+                center.addObserver(forName: UIWindow.didResignKeyNotification,
+                                   object: window,
+                                   queue: .main) { [weak self] _ in
+                    self?.resignFirstResponder()
+                },
+                center.addObserver(forName: UIWindow.didBecomeKeyNotification,
+                                   object: window,
+                                   queue: .main) { [weak self] _ in
+                    self?.becomeFirstResponder()
+                }
+            ]
+        }
+
+        private func unregisterKeyWindowObservers() {
+            keyWindowObservers.forEach(NotificationCenter.default.removeObserver)
+            keyWindowObservers = []
+        }
+
+        deinit {
+            unregisterKeyWindowObservers()
         }
 
         func display(image: CGImage?) {
@@ -372,7 +439,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                                 usesPointerLocation: Bool) {
             guard let session else { return }
 
-            becomeFirstResponder()
+            becomeFirstResponderIfAppropriate()
 
             switch session.touchMode {
             case .trackpad:
@@ -417,7 +484,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
             switch gesture.state {
             case .began:
                 pointerScrollAccumulator = .zero
-                becomeFirstResponder()
+                becomeFirstResponderIfAppropriate()
 
             case .changed:
                 let delta = gesture.translation(in: self)
@@ -438,7 +505,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                 return
             }
 
-            becomeFirstResponder()
+            becomeFirstResponderIfAppropriate()
             session.moveCursor(to: point)
             followCursorIfNeeded()
         }
@@ -490,7 +557,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
             guard let touch = touches.first, let session else { return }
 
-            becomeFirstResponder()
+            becomeFirstResponderIfAppropriate()
 
             // Second finger down → this is a two-finger gesture. Abort any
             // single-finger interaction and let the recognizers take over.

@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import CoreGraphics
 import OSLog
@@ -9,10 +10,22 @@ import RoyalVNCKit
 /// mutating session state.
 final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @unchecked Sendable {
     @Published var status: RemoteSessionStatus = .idle
-    @Published var image: CGImage?
     @Published private(set) var quality: RemoteSessionQuality = .best
-    @Published private(set) var isClipboardSyncEnabled = true
+    @Published private(set) var isClipboardSyncEnabled = false
     @Published private(set) var touchMode: RemoteTouchMode = .direct
+
+    /// Current framebuffer, published outside `objectWillChange` so that
+    /// per-frame updates don't invalidate SwiftUI (see the protocol note).
+    private let imageSubject = CurrentValueSubject<CGImage?, Never>(nil)
+
+    var image: CGImage? {
+        get { imageSubject.value }
+        set { imageSubject.send(newValue) }
+    }
+
+    var imagePublisher: AnyPublisher<CGImage?, Never> {
+        imageSubject.eraseToAnyPublisher()
+    }
 
     /// Last known remote cursor position (framebuffer coordinates).
     private(set) var cursorLocation: CGPoint = .zero

@@ -26,11 +26,13 @@ struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
             Label("Session Options", systemImage: "slider.horizontal.3")
                 .labelStyle(.iconOnly)
                 .font(.body.weight(.medium))
-                .frame(width: 52, height: 52)
+                .frame(width: 42, height: 42)
+                .contentShape(Circle())
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
+        .buttonStyle(.plain)
         .foregroundStyle(.white)
+        .padding(5)
+        .liquidGlass(in: Circle())
         .accessibilityHint("Shows quality, trackpad, and clipboard options.")
     }
 

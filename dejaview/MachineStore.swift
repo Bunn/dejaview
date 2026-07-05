@@ -25,10 +25,14 @@ struct SavedMachine: Identifiable, Codable, Equatable {
 final class MachineStore: ObservableObject {
     @Published private(set) var machines: [SavedMachine] = []
 
-    private let defaultsKey = "savedMachines"
+    private static let defaultsKey = "savedMachines"
 
     init() {
-        load()
+        machines = Self.savedMachines()
+    }
+
+    func reload() {
+        machines = Self.savedMachines()
     }
 
     func add(_ machine: SavedMachine, password: String) {
@@ -61,6 +65,10 @@ final class MachineStore: ObservableObject {
         machines.contains { $0.id == machine.id }
     }
 
+    func machine(withID id: UUID) -> SavedMachine? {
+        machines.first { $0.id == id }
+    }
+
     func password(for machine: SavedMachine) -> String {
         guard let password = Keychain.password(for: machine.id) else {
             AppLog.storage.debug("No Keychain password found for '\(machine.displayName, privacy: .public)'")
@@ -72,24 +80,26 @@ final class MachineStore: ObservableObject {
 
     // MARK: - Persistence
 
-    private func load() {
+    static func savedMachines() -> [SavedMachine] {
         guard let data = UserDefaults.standard.data(forKey: defaultsKey) else {
             AppLog.storage.info("No saved machines found in UserDefaults")
-            return
+            return []
         }
 
         do {
-            machines = try JSONDecoder().decode([SavedMachine].self, from: data)
-            AppLog.storage.info("Loaded \(self.machines.count, privacy: .public) saved machines")
+            let machines = try JSONDecoder().decode([SavedMachine].self, from: data)
+            AppLog.storage.info("Loaded \(machines.count, privacy: .public) saved machines")
+            return machines
         } catch {
             AppLog.storage.error("Failed to decode saved machines: \(error.localizedDescription, privacy: .public)")
+            return []
         }
     }
 
     private func persist() {
         do {
             let data = try JSONEncoder().encode(machines)
-            UserDefaults.standard.set(data, forKey: defaultsKey)
+            UserDefaults.standard.set(data, forKey: Self.defaultsKey)
             AppLog.storage.debug("Persisted \(self.machines.count, privacy: .public) saved machines")
         } catch {
             AppLog.storage.error("Failed to encode saved machines: \(error.localizedDescription, privacy: .public)")

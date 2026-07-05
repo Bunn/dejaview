@@ -5,6 +5,7 @@ struct ContentView: View {
     @StateObject private var session = VNCSession()
     @StateObject private var browser = BonjourBrowser()
     @StateObject private var store = MachineStore()
+    @StateObject private var intentRouter = AppIntentRouter.shared
 
     @State private var selectedSection: ConnectSection? = .hosts
     @State private var searchText = ""
@@ -53,6 +54,11 @@ struct ContentView: View {
         .onAppear {
             AppLog.ui.info("Connect view appeared; starting nearby Mac discovery")
             browser.start()
+            handlePendingIntentRequest()
+        }
+        .onChange(of: intentRouter.request) { _, request in
+            guard let request else { return }
+            handleIntentRequest(request)
         }
     }
 
@@ -293,6 +299,71 @@ struct ContentView: View {
     private func connect(to machine: SavedMachine) {
         AppLog.ui.info("Starting saved machine connection to '\(machine.displayName, privacy: .public)'")
         connect(to: machine, password: store.password(for: machine))
+    }
+
+    private func connectFromIntent(machineID: UUID) {
+        guard let machine = store.machine(withID: machineID) else {
+            AppLog.ui.warning("Ignored App Intent connection request for missing machine id=\(machineID.uuidString, privacy: .public)")
+            return
+        }
+
+        selectedSection = .hosts
+        searchText = ""
+        editingMachine = nil
+        connect(to: machine)
+    }
+
+    private func openFromIntent(destination: DejaViewDestination) {
+        selectedSection = connectSection(for: destination)
+        searchText = ""
+        editingMachine = nil
+    }
+
+    private func refreshNearbyFromIntent() {
+        openFromIntent(destination: .nearby)
+        refreshNearbyMacs()
+    }
+
+    private func disconnectFromIntent() {
+        AppLog.ui.info("Disconnecting session from App Intent")
+        session.disconnect()
+
+        if isSessionPresented {
+            isSessionPresented = false
+        } else {
+            session.reset()
+        }
+    }
+
+    private func handlePendingIntentRequest() {
+        guard let request = intentRouter.request else { return }
+        handleIntentRequest(request)
+    }
+
+    private func handleIntentRequest(_ request: AppIntentRouter.Request) {
+        switch request.action {
+        case .connect(let machineID):
+            connectFromIntent(machineID: machineID)
+        case .open(let destination):
+            openFromIntent(destination: destination)
+        case .refreshNearby:
+            refreshNearbyFromIntent()
+        case .disconnect:
+            disconnectFromIntent()
+        case .reloadMachines:
+            store.reload()
+        }
+
+        intentRouter.clear(request)
+    }
+
+    private func connectSection(for destination: DejaViewDestination) -> ConnectSection {
+        switch destination {
+        case .hosts:
+            .hosts
+        case .nearby:
+            .nearby
+        }
     }
 
     private func connect(to machine: SavedMachine, password: String) {

@@ -13,6 +13,8 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     @Published private(set) var quality: RemoteSessionQuality = .best
     @Published private(set) var isClipboardSyncEnabled = false
     @Published private(set) var touchMode: RemoteTouchMode = .direct
+    @Published private(set) var displays: [RemoteDisplay] = []
+    @Published private(set) var displaySelection: RemoteDisplaySelection = .all
 
     /// Current framebuffer, published outside `objectWillChange` so that
     /// per-frame updates don't invalidate SwiftUI (see the protocol note).
@@ -27,6 +29,23 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
         imageSubject.eraseToAnyPublisher()
     }
 
+    var displayOptions: [RemoteDisplayOption] {
+        Self.displayOptions(for: displays, framebufferFrame: framebufferFrameForDisplaySelection)
+    }
+
+    var selectedDisplayFrame: CGRect? {
+        switch displaySelection {
+        case .all:
+            return nil
+        case .display(let id):
+            return displays.first { $0.id == id }?.frame
+        case .region(let region):
+            guard let framebufferFrame = framebufferFrameForDisplaySelection else { return nil }
+
+            return region.frame(in: framebufferFrame)
+        }
+    }
+
     /// Last known remote cursor position (framebuffer coordinates).
     private(set) var cursorLocation: CGPoint = .zero
 
@@ -37,6 +56,7 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     private var username = ""
     private var password = ""
     private var reconnectPending = false
+    private static let combinedFramebufferAspectRatioThreshold: CGFloat = 2.4
 
     // MARK: - Lifecycle
 
@@ -57,12 +77,7 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
             useDisplayLink: true,
             inputMode: .forwardKeyboardShortcutsEvenIfInUseLocally,
             isClipboardRedirectionEnabled: isClipboardSyncEnabled,
-            colorDepth: {
-                switch quality {
-                case .best: return .depth24Bit
-                case .fast: return .depth16Bit
-                }
-            }(),
+            colorDepth: .depth24Bit,
             frameEncodings: .default
         )
 
@@ -86,6 +101,8 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
         connection?.delegate = nil
         connection = nil
         image = nil
+        displays = []
+        displaySelection = .all
         status = .idle
     }
 
@@ -100,6 +117,16 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
         AppLog.session.info("Changing quality from \(self.quality.rawValue, privacy: .public) to \(newQuality.rawValue, privacy: .public)")
         quality = newQuality
         applySettingsChange()
+    }
+
+    func setDisplaySelection(_ selection: RemoteDisplaySelection) {
+        let normalizedSelection = normalizedDisplaySelection(selection)
+        guard normalizedSelection != displaySelection else { return }
+
+        displaySelection = normalizedSelection
+        clampCursorToSelectableBounds()
+
+        AppLog.session.info("Display selection changed to \(self.displaySelection.logDescription, privacy: .public)")
     }
 
     func toggleClipboardSync() {
@@ -161,23 +188,16 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     /// Moves the cursor by a delta (framebuffer coordinates), clamped to the
     /// framebuffer. If `dragging`, the left button stays held while moving.
     func moveCursor(by delta: CGPoint, dragging: Bool) {
-        guard let image else { return }
+        let point = CGPoint(x: cursorLocation.x + delta.x,
+                            y: cursorLocation.y + delta.y)
 
-        let clamped = CGPoint(
-            x: min(max(cursorLocation.x + delta.x, 0), CGFloat(image.width)),
-            y: min(max(cursorLocation.y + delta.y, 0), CGFloat(image.height))
-        )
-
-        moveCursor(to: clamped, dragging: dragging)
+        moveCursor(to: point, dragging: dragging)
     }
 
     func moveCursor(to point: CGPoint, dragging: Bool = false) {
-        guard let image else { return }
+        guard image != nil else { return }
 
-        let clamped = CGPoint(
-            x: min(max(point.x, 0), CGFloat(image.width)),
-            y: min(max(point.y, 0), CGFloat(image.height))
-        )
+        let clamped = clampedCursorPoint(point)
 
         cursorLocation = clamped
 
@@ -201,11 +221,13 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     // MARK: - Right click & scroll
 
     func rightClick(at point: CGPoint) {
-        AppLog.input.debug("Right click at x=\(point.x, privacy: .public) y=\(point.y, privacy: .public)")
-        cursorLocation = point
+        let clamped = clampedCursorPoint(point)
 
-        let x = UInt16(clamping: Int(point.x))
-        let y = UInt16(clamping: Int(point.y))
+        AppLog.input.debug("Right click at x=\(clamped.x, privacy: .public) y=\(clamped.y, privacy: .public)")
+        cursorLocation = clamped
+
+        let x = UInt16(clamping: Int(clamped.x))
+        let y = UInt16(clamping: Int(clamped.y))
 
         connection?.mouseButtonDown(.right, x: x, y: y)
         connection?.mouseButtonUp(.right, x: x, y: y)
@@ -274,6 +296,176 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
 
     func sendReturn() {
         sendKey(.return)
+    }
+
+    // MARK: - Display selection
+
+    private var framebufferFrameForDisplaySelection: CGRect? {
+        if let image {
+            return CGRect(x: 0,
+                          y: 0,
+                          width: image.width,
+                          height: image.height)
+        }
+
+        if displays.count == 1 {
+            return displays[0].frame
+        }
+
+        return nil
+    }
+
+    private func updateDisplays(_ newDisplays: [RemoteDisplay]) {
+        let previousCount = displays.count
+        let previousSelection = displaySelection
+        displays = newDisplays
+        displaySelection = normalizedDisplaySelection(displaySelection)
+        clampCursorToSelectableBounds()
+
+        let layoutDescription = Self.displayLayoutDescription(newDisplays)
+        let optionDescription = displayOptions.map(\.logDescription).joined(separator: "; ")
+        AppLog.session.info("Remote display layout updated; previousCount=\(previousCount, privacy: .public) count=\(newDisplays.count, privacy: .public) selectionBefore=\(previousSelection.logDescription, privacy: .public) selectionAfter=\(self.displaySelection.logDescription, privacy: .public) optionCount=\(self.displayOptions.count, privacy: .public) options=\(optionDescription, privacy: .public) layout=\(layoutDescription, privacy: .public)")
+
+        if newDisplays.count <= 1 {
+            AppLog.session.warning("VNC server reported \(newDisplays.count, privacy: .public) screen(s). If the remote Mac has multiple physical displays, it is exposing them as one combined framebuffer or not exposing extended desktop metadata.")
+        }
+    }
+
+    private static func remoteDisplays(from screens: [VNCScreen]) -> [RemoteDisplay] {
+        screens
+            .sorted {
+                if $0.cgFrame.minY == $1.cgFrame.minY {
+                    $0.cgFrame.minX < $1.cgFrame.minX
+                } else {
+                    $0.cgFrame.minY < $1.cgFrame.minY
+                }
+            }
+            .enumerated()
+            .map { index, screen in
+                RemoteDisplay(id: screen.id,
+                              name: "Display \(index + 1)",
+                              frame: screen.cgFrame)
+            }
+    }
+
+    private static func displayOptions(for displays: [RemoteDisplay],
+                                       framebufferFrame: CGRect?) -> [RemoteDisplayOption] {
+        var options = [
+            RemoteDisplayOption(selection: .all,
+                                title: "All Displays",
+                                systemImage: "rectangle.split.2x1")
+        ]
+
+        if displays.count > 1 {
+            options.append(contentsOf: displays.map { display in
+                RemoteDisplayOption(selection: .display(display.id),
+                                    title: display.menuTitle,
+                                    systemImage: "display")
+            })
+        } else if let framebufferFrame {
+            options.append(contentsOf: fallbackDisplayRegions(for: framebufferFrame).map { region in
+                RemoteDisplayOption(selection: .region(region),
+                                    title: region.title,
+                                    systemImage: region.systemImage)
+            })
+        }
+
+        return options
+    }
+
+    private static func fallbackDisplayRegions(for framebufferFrame: CGRect) -> [RemoteDisplayRegion] {
+        guard framebufferFrame.width > 0, framebufferFrame.height > 0 else { return [] }
+
+        let aspectRatio = framebufferFrame.width / framebufferFrame.height
+
+        if aspectRatio >= combinedFramebufferAspectRatioThreshold {
+            return [.left, .right]
+        } else if aspectRatio <= 1 / combinedFramebufferAspectRatioThreshold {
+            return [.top, .bottom]
+        } else {
+            return []
+        }
+    }
+
+    private static func displayLayoutDescription(_ displays: [RemoteDisplay]) -> String {
+        guard !displays.isEmpty else { return "none" }
+
+        return displays.map(\.logDescription).joined(separator: "; ")
+    }
+
+    private static func screenLayoutDescription(from screens: [VNCScreen]) -> String {
+        guard !screens.isEmpty else { return "none" }
+
+        return screens
+            .sorted {
+                if $0.cgFrame.minY == $1.cgFrame.minY {
+                    $0.cgFrame.minX < $1.cgFrame.minX
+                } else {
+                    $0.cgFrame.minY < $1.cgFrame.minY
+                }
+            }
+            .map { screen in
+                let frame = screen.cgFrame
+                let minX = Int(frame.minX.rounded())
+                let minY = Int(frame.minY.rounded())
+                let width = Int(frame.width.rounded())
+                let height = Int(frame.height.rounded())
+
+                return "id=\(screen.id) frame=(x:\(minX),y:\(minY),w:\(width),h:\(height))"
+            }
+            .joined(separator: "; ")
+    }
+
+    private func normalizedDisplaySelection(_ selection: RemoteDisplaySelection) -> RemoteDisplaySelection {
+        switch selection {
+        case .all:
+            return .all
+        case .display(let id):
+            if displays.count > 1, displays.contains(where: { $0.id == id }) {
+                return selection
+            } else {
+                let availableIDs = displays.map { String($0.id) }.joined(separator: ",")
+                AppLog.session.warning("Display selection normalized to all; reason=missingDisplay requested=\(selection.logDescription, privacy: .public) availableDisplayIDs=\(availableIDs, privacy: .public)")
+
+                return .all
+            }
+        case .region(let region):
+            guard displays.count <= 1,
+                  let framebufferFrame = framebufferFrameForDisplaySelection,
+                  Self.fallbackDisplayRegions(for: framebufferFrame).contains(region) else {
+                AppLog.session.warning("Display selection normalized to all; reason=invalidRegion requested=\(selection.logDescription, privacy: .public) reportedDisplayCount=\(self.displays.count, privacy: .public)")
+
+                return .all
+            }
+
+            return selection
+        }
+    }
+
+    private var selectableCursorBounds: CGRect? {
+        guard let image else { return nil }
+
+        let framebufferBounds = CGRect(x: 0,
+                                       y: 0,
+                                       width: image.width,
+                                       height: image.height)
+
+        guard let selectedDisplayFrame else { return framebufferBounds }
+
+        let displayBounds = selectedDisplayFrame.intersection(framebufferBounds)
+
+        return displayBounds.isNull ? framebufferBounds : displayBounds
+    }
+
+    private func clampedCursorPoint(_ point: CGPoint) -> CGPoint {
+        guard let bounds = selectableCursorBounds else { return point }
+
+        return CGPoint(x: min(max(point.x, bounds.minX), bounds.maxX),
+                       y: min(max(point.y, bounds.minY), bounds.maxY))
+    }
+
+    private func clampCursorToSelectableBounds() {
+        cursorLocation = clampedCursorPoint(cursorLocation)
     }
 }
 
@@ -365,16 +557,21 @@ extension VNCSession: VNCConnectionDelegate {
     func connection(_ connection: VNCConnection,
                     didCreateFramebuffer framebuffer: VNCFramebuffer) {
         let cgImage = framebuffer.cgImage
+        let screens = framebuffer.screens
+        let displays = Self.remoteDisplays(from: screens)
+        let screenCount = screens.count
+        let screenLayout = Self.screenLayoutDescription(from: screens)
 
         Task { @MainActor [weak self] in
             guard let self else { return }
 
             self.image = cgImage
+            self.updateDisplays(displays)
 
             if let cgImage {
-                AppLog.session.info("Created framebuffer \(cgImage.width, privacy: .public)x\(cgImage.height, privacy: .public)")
+                AppLog.session.info("Created framebuffer width=\(cgImage.width, privacy: .public) height=\(cgImage.height, privacy: .public) vncScreenCount=\(screenCount, privacy: .public) vncScreens=\(screenLayout, privacy: .public)")
             } else {
-                AppLog.session.warning("Created framebuffer without a CGImage")
+                AppLog.session.warning("Created framebuffer without a CGImage; vncScreenCount=\(screenCount, privacy: .public) vncScreens=\(screenLayout, privacy: .public)")
             }
 
             // Start the trackpad cursor at the center of the screen.
@@ -387,16 +584,21 @@ extension VNCSession: VNCConnectionDelegate {
     func connection(_ connection: VNCConnection,
                     didResizeFramebuffer framebuffer: VNCFramebuffer) {
         let cgImage = framebuffer.cgImage
+        let screens = framebuffer.screens
+        let displays = Self.remoteDisplays(from: screens)
+        let screenCount = screens.count
+        let screenLayout = Self.screenLayoutDescription(from: screens)
 
         Task { @MainActor [weak self] in
             guard let self else { return }
 
             self.image = cgImage
+            self.updateDisplays(displays)
 
             if let cgImage {
-                AppLog.session.info("Resized framebuffer to \(cgImage.width, privacy: .public)x\(cgImage.height, privacy: .public)")
+                AppLog.session.info("Resized framebuffer width=\(cgImage.width, privacy: .public) height=\(cgImage.height, privacy: .public) vncScreenCount=\(screenCount, privacy: .public) vncScreens=\(screenLayout, privacy: .public)")
             } else {
-                AppLog.session.warning("Resized framebuffer without a CGImage")
+                AppLog.session.warning("Resized framebuffer without a CGImage; vncScreenCount=\(screenCount, privacy: .public) vncScreens=\(screenLayout, privacy: .public)")
             }
         }
     }

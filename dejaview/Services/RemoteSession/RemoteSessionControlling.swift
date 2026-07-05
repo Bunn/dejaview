@@ -32,11 +32,16 @@ protocol RemoteSessionControlling: ObservableObject, RemoteSessionInputControlli
     var imagePublisher: AnyPublisher<CGImage?, Never> { get }
     var quality: RemoteSessionQuality { get }
     var isClipboardSyncEnabled: Bool { get }
+    var displays: [RemoteDisplay] { get }
+    var displayOptions: [RemoteDisplayOption] { get }
+    var displaySelection: RemoteDisplaySelection { get }
+    var selectedDisplayFrame: CGRect? { get }
 
     func connect(host: String, port: UInt16, username: String, password: String)
     func disconnect()
     func reset()
     func setQuality(_ newQuality: RemoteSessionQuality)
+    func setDisplaySelection(_ selection: RemoteDisplaySelection)
     func toggleClipboardSync()
     func toggleTouchMode()
     func retryConnect()

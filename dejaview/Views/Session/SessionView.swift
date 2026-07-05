@@ -38,14 +38,35 @@ struct SessionView<Session: RemoteSessionControlling>: View {
         }
         .overlay(alignment: .bottomTrailing) {
             if session.status == .connected && !showsInputBar {
-                SessionOptionsMenu(session: session)
-                    .padding(.bottom, 28)
-                    .padding(.trailing, 20)
+                HStack(spacing: 10) {
+                    if session.displayOptions.count > 1 {
+                        SessionDisplayMenu(session: session)
+                    }
+
+                    SessionOptionsMenu(session: session)
+                }
+                .padding(.bottom, 28)
+                .padding(.trailing, 20)
             }
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)
+        .onAppear {
+            logDisplayControlState(reason: "sessionViewAppeared")
+        }
+        .onChange(of: session.status) { _, _ in
+            logDisplayControlState(reason: "statusChanged")
+        }
+        .onChange(of: session.displays) { _, _ in
+            logDisplayControlState(reason: "displayLayoutChanged")
+        }
+        .onChange(of: session.displaySelection) { _, _ in
+            logDisplayControlState(reason: "displaySelectionChanged")
+        }
+        .onChange(of: showsInputBar) { _, _ in
+            logDisplayControlState(reason: "inputBarVisibilityChanged")
+        }
     }
 
     // MARK: - Content
@@ -71,8 +92,10 @@ struct SessionView<Session: RemoteSessionControlling>: View {
 
         case .connected:
             RemoteDesktopView(session: session,
+                              selectedFramebufferFrame: session.selectedDisplayFrame,
                               zoomScale: $streamZoomScale,
                               followsCursor: followsCursorWhenZoomed)
+                .id(session.displaySelection.id)
                 .ignoresSafeArea()
 
         case .disconnected(let message):
@@ -139,6 +162,19 @@ struct SessionView<Session: RemoteSessionControlling>: View {
         .liquidGlass(in: Capsule())
         .padding(.top, 20)
         .padding(.trailing, 20)
+    }
+
+    private func logDisplayControlState(reason: String) {
+        let displayCount = session.displays.count
+        let bottomControlsVisible = session.status == .connected && !showsInputBar
+        let displayOptionCount = session.displayOptions.count
+        let displayControlVisible = bottomControlsVisible && displayOptionCount > 1
+        let optionDescription = session.displayOptions.map(\.logDescription).joined(separator: "; ")
+        let layoutDescription = session.displays.isEmpty
+            ? "none"
+            : session.displays.map(\.logDescription).joined(separator: "; ")
+
+        AppLog.ui.info("Session display controls state; reason=\(reason, privacy: .public) status=\(self.session.status.logDescription, privacy: .public) displayCount=\(displayCount, privacy: .public) selection=\(self.session.displaySelection.logDescription, privacy: .public) bottomControlsVisible=\(bottomControlsVisible, privacy: .public) displayControlVisible=\(displayControlVisible, privacy: .public) displayOptionCount=\(displayOptionCount, privacy: .public) displayOptions=\(optionDescription, privacy: .public) inputBarVisible=\(self.showsInputBar, privacy: .public) layout=\(layoutDescription, privacy: .public)")
     }
 
     private var inputBar: some View {

@@ -9,13 +9,15 @@ struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
 
     var body: some View {
         Menu {
-            Picker("Quality", selection: qualityBinding) {
-                ForEach(RemoteSessionQuality.allCases) { quality in
-                    Label(quality.rawValue, systemImage: quality.icon)
-                        .tag(quality)
+            if RemoteSessionQuality.allCases.count > 1 {
+                Picker("Quality", selection: qualityBinding) {
+                    ForEach(RemoteSessionQuality.allCases) { quality in
+                        Label(quality.rawValue, systemImage: quality.icon)
+                            .tag(quality)
+                    }
                 }
+                .pickerStyle(.inline)
             }
-            .pickerStyle(.inline)
 
             Toggle("Trackpad Mode", systemImage: "cursorarrow.motionlines",
                    isOn: trackpadBinding)

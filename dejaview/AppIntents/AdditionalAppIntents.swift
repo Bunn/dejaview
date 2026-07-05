@@ -9,7 +9,7 @@ enum DejaViewDestination: String, CaseIterable, AppEnum {
 
     static let caseDisplayRepresentations: [DejaViewDestination: DisplayRepresentation] = [
         .hosts: DisplayRepresentation(title: "Hosts", subtitle: "Saved and discovered screen sharing targets"),
-        .nearby: DisplayRepresentation(title: "Nearby Macs", subtitle: "Macs advertising Screen Sharing")
+        .nearby: DisplayRepresentation(title: "Nearby Computers", subtitle: "Computers advertising Screen Sharing")
     ]
 
     var displayName: String {
@@ -17,7 +17,7 @@ enum DejaViewDestination: String, CaseIterable, AppEnum {
         case .hosts:
             "Hosts"
         case .nearby:
-            "Nearby Macs"
+            "Nearby Computers"
         }
     }
 }
@@ -42,24 +42,24 @@ struct OpenDejaViewIntent: AppIntent {
 }
 
 struct RefreshNearbyMacsIntent: AppIntent {
-    static let title: LocalizedStringResource = "Refresh Nearby Macs"
+    static let title: LocalizedStringResource = "Refresh Nearby Computers"
     static let description = IntentDescription("Open Glassy View and refresh nearby Screen Sharing hosts.")
     static let openAppWhenRun = true
 
     static var parameterSummary: some ParameterSummary {
-        Summary("Refresh nearby Macs")
+        Summary("Refresh nearby computers")
     }
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         AppIntentRouter.shared.requestRefreshNearby()
-        return .result(dialog: "Refreshing nearby Macs.")
+        return .result(dialog: "Refreshing nearby computers.")
     }
 }
 
 struct AddSavedMachineIntent: AppIntent {
-    static let title: LocalizedStringResource = "Add Saved Mac"
-    static let description = IntentDescription("Save a Mac for future Glassy View connections.")
+    static let title: LocalizedStringResource = "Add Saved Computer"
+    static let description = IntentDescription("Save a computer for future Glassy View connections.")
     static let openAppWhenRun = false
 
     @Parameter(title: "Host")

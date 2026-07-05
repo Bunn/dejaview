@@ -2,7 +2,7 @@ import AppIntents
 import Foundation
 
 struct SavedMachineEntity: AppEntity, Identifiable {
-    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Saved Mac")
+    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Saved Computer")
     static let defaultQuery = SavedMachineQuery()
 
     let id: UUID

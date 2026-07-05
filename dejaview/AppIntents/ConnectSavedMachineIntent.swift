@@ -1,11 +1,11 @@
 import AppIntents
 
 struct ConnectSavedMachineIntent: AppIntent {
-    static let title: LocalizedStringResource = "Connect to Mac"
-    static let description = IntentDescription("Open Glassy View and connect to a saved Mac.")
+    static let title: LocalizedStringResource = "Connect to Computer"
+    static let description = IntentDescription("Open Glassy View and connect to a saved computer.")
     static let openAppWhenRun = true
 
-    @Parameter(title: "Mac")
+    @Parameter(title: "Computer")
     var machine: SavedMachineEntity
 
     static var parameterSummary: some ParameterSummary {
@@ -23,9 +23,9 @@ struct DejaViewShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(intent: ConnectSavedMachineIntent(),
                     phrases: [
-                        "Connect to a Mac with \(.applicationName)",
+                        "Connect to a computer with \(.applicationName)",
                         "Start a remote session with \(.applicationName)",
-                        "Open a saved Mac with \(.applicationName)"
+                        "Open a saved computer with \(.applicationName)"
                     ],
                     shortTitle: "Connect",
                     systemImageName: "rectangle.connected.to.line.below")
@@ -38,17 +38,17 @@ struct DejaViewShortcuts: AppShortcutsProvider {
                     systemImageName: "macwindow")
         AppShortcut(intent: RefreshNearbyMacsIntent(),
                     phrases: [
-                        "Refresh nearby Macs in \(.applicationName)",
-                        "Find nearby Macs with \(.applicationName)"
+                        "Refresh nearby computers in \(.applicationName)",
+                        "Find nearby computers with \(.applicationName)"
                     ],
                     shortTitle: "Refresh Nearby",
                     systemImageName: "arrow.clockwise")
         AppShortcut(intent: AddSavedMachineIntent(),
                     phrases: [
-                        "Add a Mac to \(.applicationName)",
-                        "Save a Mac in \(.applicationName)"
+                        "Add a computer to \(.applicationName)",
+                        "Save a computer in \(.applicationName)"
                     ],
-                    shortTitle: "Add Mac",
+                    shortTitle: "Add Computer",
                     systemImageName: "plus")
         AppShortcut(intent: DisconnectRemoteSessionIntent(),
                     phrases: [

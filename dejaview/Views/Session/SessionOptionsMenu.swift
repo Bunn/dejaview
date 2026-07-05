@@ -1,96 +1,67 @@
 import SwiftUI
 
-/// Floating Liquid Glass options button (bottom-right of the session).
-///
-/// The option buttons morph in and out of the main button using
-/// the standard Liquid Glass animation (`GlassEffectContainer` + `glassEffectID`).
+/// Context menu for session options (bottom-right of the session).
 struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
+    // Safe to observe: framebuffer updates bypass objectWillChange (see
+    // RemoteSessionControlling.imagePublisher), so this only re-renders on
+    // actual state changes — which the menu checkmarks need to reflect.
     @ObservedObject var session: Session
 
-    @State private var isExpanded = false
-    @Namespace private var glassNamespace
-
     var body: some View {
-        GlassEffectContainer(spacing: 14) {
-            VStack(alignment: .trailing, spacing: 14) {
-                if isExpanded {
-                    ForEach(RemoteSessionQuality.allCases) { quality in
-                        optionRow(title: quality.rawValue,
-                                  icon: quality.icon,
-                                  isSelected: session.quality == quality) {
-                            session.setQuality(quality)
-                            collapse()
-                        }
-                        .glassEffect(.regular.interactive(), in: .capsule)
-                        .glassEffectID(quality.rawValue, in: glassNamespace)
-                    }
-
-                    optionRow(title: "Trackpad Mode",
-                              icon: "cursorarrow.motionlines",
-                              isSelected: session.touchMode == .trackpad) {
-                        session.toggleTouchMode()
-                        collapse()
-                    }
-                    .glassEffect(.regular.interactive(), in: .capsule)
-                    .glassEffectID("trackpad", in: glassNamespace)
-
-                    optionRow(title: "Clipboard Sync",
-                              icon: "doc.on.clipboard",
-                              isSelected: session.isClipboardSyncEnabled) {
-                        session.toggleClipboardSync()
-                        collapse()
-                    }
-                    .glassEffect(.regular.interactive(), in: .capsule)
-                    .glassEffectID("clipboard", in: glassNamespace)
+        Menu {
+            Picker("Quality", selection: qualityBinding) {
+                ForEach(RemoteSessionQuality.allCases) { quality in
+                    Label(quality.rawValue, systemImage: quality.icon)
+                        .tag(quality)
                 }
-
-                mainButton
-                    .glassEffect(.regular.interactive(), in: .circle)
-                    .glassEffectID("menu", in: glassNamespace)
             }
-        }
-        .animation(.smooth(duration: 0.4), value: isExpanded)
-    }
+            .pickerStyle(.inline)
 
-    // MARK: - Pieces
+            Toggle("Trackpad Mode", systemImage: "cursorarrow.motionlines",
+                   isOn: trackpadBinding)
 
-    private var mainButton: some View {
-        Button {
-            isExpanded.toggle()
+            Toggle("Clipboard Sync", systemImage: "doc.on.clipboard",
+                   isOn: clipboardBinding)
         } label: {
-            Image(systemName: isExpanded ? "xmark" : "slider.horizontal.3")
+            Label("Session Options", systemImage: "slider.horizontal.3")
+                .labelStyle(.iconOnly)
                 .font(.body.weight(.medium))
                 .frame(width: 52, height: 52)
-                .contentShape(Circle())
         }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
         .foregroundStyle(.white)
+        .accessibilityHint("Shows quality, trackpad, and clipboard options.")
     }
 
-    private func optionRow(title: String,
-                           icon: String,
-                           isSelected: Bool,
-                           action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .frame(width: 22)
-
-                Text(title)
-                    .font(.subheadline.weight(.medium))
-
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.caption.weight(.bold))
-                }
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 13)
-            .contentShape(Capsule())
+    private var qualityBinding: Binding<RemoteSessionQuality> {
+        Binding {
+            session.quality
+        } set: { newQuality in
+            session.setQuality(newQuality)
         }
     }
 
-    private func collapse() {
-        isExpanded = false
+    // Idempotent setters: only toggle when the requested value actually
+    // differs. SwiftUI may invoke a menu toggle's setter more than once per
+    // tap, and a blind toggle() would cancel itself out.
+    private var trackpadBinding: Binding<Bool> {
+        Binding {
+            session.touchMode == .trackpad
+        } set: { isOn in
+            if (session.touchMode == .trackpad) != isOn {
+                session.toggleTouchMode()
+            }
+        }
+    }
+
+    private var clipboardBinding: Binding<Bool> {
+        Binding {
+            session.isClipboardSyncEnabled
+        } set: { isOn in
+            if session.isClipboardSyncEnabled != isOn {
+                session.toggleClipboardSync()
+            }
+        }
     }
 }

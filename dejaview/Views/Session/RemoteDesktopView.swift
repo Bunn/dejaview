@@ -12,28 +12,62 @@ import UIKit
 /// Two fingers (both modes):
 /// - two-finger tap / trackpad secondary tap = right click
 /// - two-finger drag = scroll wheel (natural direction)
+/// - pinch = zoom the visible stream
+///
+/// When follow-cursor is enabled, zoomed trackpad/hover cursor movement
+/// recenters the visible stream around the remote cursor.
 struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable {
     @ObservedObject var session: Session
+    @Binding var zoomScale: CGFloat
+    var followsCursor: Bool
 
     func makeUIView(context: Context) -> ScreenView {
         let view = ScreenView()
         view.session = session
-        DispatchQueue.main.async {
+        view.onZoomScaleChanged = context.coordinator.setZoomScale(_:)
+        Task { @MainActor in
             view.becomeFirstResponder()
         }
         return view
     }
 
     func updateUIView(_ uiView: ScreenView, context: Context) {
+        context.coordinator.zoomScale = $zoomScale
         uiView.session = session
         uiView.display(image: session.image)
+        uiView.setZoomScale(zoomScale, notify: false)
+        uiView.setFollowsCursor(followsCursor)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(zoomScale: $zoomScale)
+    }
+
+    final class Coordinator {
+        var zoomScale: Binding<CGFloat>
+
+        init(zoomScale: Binding<CGFloat>) {
+            self.zoomScale = zoomScale
+        }
+
+        @MainActor
+        func setZoomScale(_ zoomScale: CGFloat) {
+            self.zoomScale.wrappedValue = zoomScale
+        }
     }
 
     final class ScreenView: UIView, UIGestureRecognizerDelegate {
         weak var session: (any RemoteSessionInputControlling)?
+        var onZoomScaleChanged: ((CGFloat) -> Void)?
 
         private var imageSize: CGSize = .zero
+        private let imageLayer = CALayer()
         private weak var pointerScrollPan: UIPanGestureRecognizer?
+
+        private var zoomScale: CGFloat = 1
+        private var followsCursor = true
+        private var viewportCenter: CGPoint?
+        private var pinchStartZoomScale: CGFloat = 1
 
         // Single-touch state
         private var lastTouchLocation: CGPoint = .zero
@@ -57,6 +91,8 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         private let tapDurationThreshold: TimeInterval = 0.35
         private let longPressDelay: TimeInterval = 0.5
         private let pressDebounce: TimeInterval = 0.05
+        private let minimumZoomScale: CGFloat = 1
+        private let maximumZoomScale: CGFloat = 4
 
         /// Points of finger travel per wheel step. Wheel steps only move a
         /// few lines each on macOS, so this needs to be small — and it acts
@@ -71,9 +107,16 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
             super.init(frame: frame)
 
             backgroundColor = .black
-            layer.contentsGravity = .resizeAspect
-            layer.magnificationFilter = .linear
+            clipsToBounds = true
+            imageLayer.contentsGravity = .resize
+            imageLayer.magnificationFilter = .linear
+            imageLayer.minificationFilter = .linear
+            layer.addSublayer(imageLayer)
             isMultipleTouchEnabled = true
+
+            let pinch = UIPinchGestureRecognizer(target: self,
+                                                 action: #selector(handlePinch(_:)))
+            addGestureRecognizer(pinch)
 
             let twoFingerTap = UITapGestureRecognizer(target: self,
                                                       action: #selector(handleTwoFingerTap(_:)))
@@ -110,6 +153,11 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
             fatalError("init(coder:) has not been implemented")
         }
 
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            updateImageLayerFrame()
+        }
+
         override func didMoveToWindow() {
             super.didMoveToWindow()
 
@@ -119,14 +167,37 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         }
 
         func display(image: CGImage?) {
-            layer.contents = image
+            imageLayer.contents = image
 
             if let image {
                 imageSize = CGSize(width: image.width, height: image.height)
+                if viewportCenter == nil {
+                    viewportCenter = CGPoint(x: imageSize.width / 2,
+                                             y: imageSize.height / 2)
+                }
+            }
+
+            updateImageLayerFrame()
+        }
+
+        func setZoomScale(_ newZoomScale: CGFloat, notify: Bool) {
+            let clamped = clampedZoomScale(newZoomScale)
+            guard clamped != zoomScale else { return }
+
+            let anchor = followsCursor ? nil : CGPoint(x: bounds.midX, y: bounds.midY)
+            setZoomScale(clamped, anchorInView: anchor, notify: notify)
+        }
+
+        func setFollowsCursor(_ newValue: Bool) {
+            let changed = followsCursor != newValue
+            followsCursor = newValue
+
+            if changed {
+                followCursorIfNeeded()
             }
         }
 
-        // MARK: - Coordinate mapping (.resizeAspect letterboxing)
+        // MARK: - Coordinate mapping
 
         private var renderScale: CGFloat {
             guard imageSize.width > 0, imageSize.height > 0,
@@ -136,17 +207,16 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                        bounds.height / imageSize.height)
         }
 
+        private var effectiveScale: CGFloat {
+            renderScale * zoomScale
+        }
+
         private func framebufferPoint(for point: CGPoint) -> CGPoint? {
             guard imageSize.width > 0, imageSize.height > 0,
                   bounds.width > 0, bounds.height > 0 else { return nil }
 
-            let scale = renderScale
-
-            let renderedSize = CGSize(width: imageSize.width * scale,
-                                      height: imageSize.height * scale)
-
-            let origin = CGPoint(x: (bounds.width - renderedSize.width) / 2,
-                                 y: (bounds.height - renderedSize.height) / 2)
+            let scale = effectiveScale
+            let origin = imageLayer.frame.origin
 
             let fx = (point.x - origin.x) / scale
             let fy = (point.y - origin.y) / scale
@@ -155,6 +225,137 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                   fx <= imageSize.width, fy <= imageSize.height else { return nil }
 
             return CGPoint(x: fx, y: fy)
+        }
+
+        // MARK: - Zoom
+
+        @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+            switch gesture.state {
+            case .began:
+                pinchStartZoomScale = zoomScale
+                enterMultiTouch()
+
+            case .changed:
+                setZoomScale(pinchStartZoomScale * gesture.scale,
+                             anchorInView: gesture.location(in: self),
+                             notify: true)
+
+            default:
+                pinchStartZoomScale = zoomScale
+            }
+        }
+
+        private func setZoomScale(_ newZoomScale: CGFloat,
+                                  anchorInView: CGPoint?,
+                                  notify: Bool) {
+            let clamped = clampedZoomScale(newZoomScale)
+            guard imageSize.width > 0, imageSize.height > 0 else {
+                zoomScale = clamped
+                if notify { onZoomScaleChanged?(clamped) }
+                return
+            }
+
+            let anchorFramebuffer = anchorInView.flatMap(framebufferPoint(for:))
+            zoomScale = clamped
+
+            if clamped == minimumZoomScale {
+                viewportCenter = CGPoint(x: imageSize.width / 2,
+                                         y: imageSize.height / 2)
+            } else if followsCursor, anchorInView == nil, let session {
+                viewportCenter = session.cursorLocation
+            } else if let anchorInView, let anchorFramebuffer {
+                let viewportCenterX = anchorFramebuffer.x
+                    - (anchorInView.x - bounds.midX) / effectiveScale
+                let viewportCenterY = anchorFramebuffer.y
+                    - (anchorInView.y - bounds.midY) / effectiveScale
+                viewportCenter = CGPoint(x: viewportCenterX,
+                                         y: viewportCenterY)
+            }
+
+            updateImageLayerFrame()
+
+            if notify {
+                onZoomScaleChanged?(clamped)
+            }
+        }
+
+        private func clampedZoomScale(_ zoomScale: CGFloat) -> CGFloat {
+            min(max(zoomScale, minimumZoomScale), maximumZoomScale)
+        }
+
+        private func updateImageLayerFrame() {
+            guard imageSize.width > 0, imageSize.height > 0,
+                  bounds.width > 0, bounds.height > 0 else {
+                imageLayer.frame = .zero
+                return
+            }
+
+            let scale = effectiveScale
+            let renderedSize = CGSize(width: imageSize.width * scale,
+                                      height: imageSize.height * scale)
+            let center = clampedViewportCenter(viewportCenter ?? CGPoint(x: imageSize.width / 2,
+                                                                         y: imageSize.height / 2),
+                                               renderedSize: renderedSize)
+            viewportCenter = center
+
+            var origin = CGPoint(x: bounds.midX - center.x * scale,
+                                 y: bounds.midY - center.y * scale)
+
+            if renderedSize.width <= bounds.width {
+                origin.x = (bounds.width - renderedSize.width) / 2
+            } else {
+                origin.x = min(max(origin.x, bounds.width - renderedSize.width), 0)
+            }
+
+            if renderedSize.height <= bounds.height {
+                origin.y = (bounds.height - renderedSize.height) / 2
+            } else {
+                origin.y = min(max(origin.y, bounds.height - renderedSize.height), 0)
+            }
+
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            imageLayer.frame = CGRect(origin: origin, size: renderedSize)
+            CATransaction.commit()
+        }
+
+        private func clampedViewportCenter(_ center: CGPoint,
+                                           renderedSize: CGSize) -> CGPoint {
+            guard zoomScale > minimumZoomScale else {
+                return CGPoint(x: imageSize.width / 2,
+                               y: imageSize.height / 2)
+            }
+
+            return CGPoint(x: clampedViewportCoordinate(center.x,
+                                                        imageLength: imageSize.width,
+                                                        renderedLength: renderedSize.width,
+                                                        viewportLength: bounds.width),
+                           y: clampedViewportCoordinate(center.y,
+                                                        imageLength: imageSize.height,
+                                                        renderedLength: renderedSize.height,
+                                                        viewportLength: bounds.height))
+        }
+
+        private func clampedViewportCoordinate(_ coordinate: CGFloat,
+                                               imageLength: CGFloat,
+                                               renderedLength: CGFloat,
+                                               viewportLength: CGFloat) -> CGFloat {
+            guard renderedLength > viewportLength else {
+                return imageLength / 2
+            }
+
+            let visibleHalfLength = viewportLength / (2 * effectiveScale)
+            let lowerBound = visibleHalfLength
+            let upperBound = imageLength - visibleHalfLength
+
+            return min(max(coordinate, lowerBound), upperBound)
+        }
+
+        private func followCursorIfNeeded() {
+            guard followsCursor, zoomScale > minimumZoomScale, let session else { return }
+
+            viewportCenter = session.cursorLocation
+            updateImageLayerFrame()
         }
 
         // MARK: - Two-finger gestures
@@ -187,6 +388,8 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                     session.rightClick(at: point)
                 }
             }
+
+            followCursorIfNeeded()
         }
 
         @objc private func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
@@ -237,6 +440,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
             becomeFirstResponder()
             session.moveCursor(to: point)
+            followCursorIfNeeded()
         }
 
         private func forwardScroll(delta: CGPoint,
@@ -391,10 +595,11 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
                 // View-point delta → framebuffer delta, so finger travel
                 // matches on-screen cursor travel.
-                let scale = renderScale
+                let scale = effectiveScale
                 let fbDelta = CGPoint(x: delta.x / scale, y: delta.y / scale)
 
                 session.moveCursor(by: fbDelta, dragging: isDragging)
+                followCursorIfNeeded()
 
             case .direct:
                 guard let point = framebufferPoint(for: location) else { return }
@@ -441,6 +646,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                 let point = framebufferPoint(for: touch.location(in: self))
                     ?? session.cursorLocation
                 session.leftButtonUp(at: point)
+                followCursorIfNeeded()
             }
         }
 

@@ -8,6 +8,8 @@ struct SessionView<Session: RemoteSessionControlling>: View {
 
     @State private var showsInputBar = false
     @State private var textToSend = ""
+    @State private var streamZoomScale: CGFloat = 1
+    @State private var followsCursorWhenZoomed = true
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -24,6 +26,14 @@ struct SessionView<Session: RemoteSessionControlling>: View {
         .overlay(alignment: .bottom) {
             if showsInputBar && session.status == .connected {
                 inputBar
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if session.status == .connected && !showsInputBar {
+                SessionZoomControls(zoomScale: $streamZoomScale,
+                                    followsCursor: $followsCursorWhenZoomed)
+                    .padding(.bottom, 28)
+                    .padding(.leading, 20)
             }
         }
         .overlay(alignment: .bottomTrailing) {
@@ -60,7 +70,9 @@ struct SessionView<Session: RemoteSessionControlling>: View {
             }
 
         case .connected:
-            RemoteDesktopView(session: session)
+            RemoteDesktopView(session: session,
+                              zoomScale: $streamZoomScale,
+                              followsCursor: followsCursorWhenZoomed)
                 .ignoresSafeArea()
 
         case .disconnected(let message):

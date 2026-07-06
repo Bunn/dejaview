@@ -48,6 +48,22 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Getting Started") {
+                NavigationLink {
+                    OnboardingView()
+                } label: {
+                    Label("How Glassy View Works", systemImage: "sparkles.rectangle.stack")
+                }
+            }
+
+            Section("FAQ") {
+                NavigationLink {
+                    FAQView()
+                } label: {
+                    Label("Frequently Asked Questions", systemImage: "questionmark.circle")
+                }
+            }
+
             #if DEBUG
             debugPaymentsSection
             #endif

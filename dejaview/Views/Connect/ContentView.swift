@@ -16,6 +16,8 @@ struct ContentView<Session: RemoteSessionControlling,
     @State private var selectedSection: ConnectSection? = .hosts
     @State private var searchText = ""
 
+    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @State private var isOnboardingPresented = false
     @State private var isSessionPresented = false
     @State private var isSettingsPresented = false
 
@@ -52,6 +54,12 @@ struct ContentView<Session: RemoteSessionControlling,
         .fullScreenCover(isPresented: $isSessionPresented, onDismiss: session.reset) {
             SessionView(session: session)
         }
+        .fullScreenCover(isPresented: $isOnboardingPresented) {
+            NavigationStack {
+                OnboardingView(onComplete: completeOnboarding)
+            }
+            .interactiveDismissDisabled()
+        }
         .sheet(isPresented: $isSettingsPresented) {
             NavigationStack {
                 SettingsView()
@@ -87,6 +95,7 @@ struct ContentView<Session: RemoteSessionControlling,
             AppLog.ui.info("Connect view appeared; starting nearby Mac discovery")
             browser.start()
             networkPathObserver.start()
+            presentOnboardingIfNeeded()
             handlePendingIntentRequest()
 
             if scenePhase == .active {
@@ -420,6 +429,16 @@ struct ContentView<Session: RemoteSessionControlling,
 
     private func dismissSettings() {
         isSettingsPresented = false
+    }
+
+    private func presentOnboardingIfNeeded() {
+        guard !hasCompletedOnboarding else { return }
+        isOnboardingPresented = true
+    }
+
+    private func completeOnboarding() {
+        hasCompletedOnboarding = true
+        isOnboardingPresented = false
     }
 
     private func refreshNearbyMacs() {

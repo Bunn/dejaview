@@ -11,4 +11,5 @@ enum AppLog {
     static let input = Logger(subsystem: subsystem, category: "Input")
     static let ui = Logger(subsystem: subsystem, category: "UI")
     static let reachability = Logger(subsystem: subsystem, category: "Reachability")
+    static let subscriptions = Logger(subsystem: subsystem, category: "Subscriptions")
 }

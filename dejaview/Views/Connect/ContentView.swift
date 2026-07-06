@@ -17,6 +17,7 @@ struct ContentView<Session: RemoteSessionControlling,
     @State private var searchText = ""
 
     @State private var isSessionPresented = false
+    @State private var isSettingsPresented = false
 
     @State private var editingMachine: SavedMachine?
     @State private var editingPassword = ""
@@ -44,25 +45,23 @@ struct ContentView<Session: RemoteSessionControlling,
                                hostCount: store.machines.count + browser.services.count,
                                nearbyCount: browser.services.count)
         } detail: {
-            detailView
-                .navigationTitle(currentSection.title)
-                .navigationBarTitleDisplayMode(.inline)
-                .searchable(text: $searchText,
-                            placement: .navigationBarDrawer(displayMode: .always),
-                            prompt: "Search")
-                .toolbar {
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        Button("Add Host", systemImage: "plus", action: addMachine)
-
-                        Menu("More", systemImage: "ellipsis.circle") {
-                            Button("Refresh Machines", systemImage: "arrow.clockwise", action: refreshMachines)
-                        }
-                    }
-                }
+            detailRoot
         }
         .navigationSplitViewStyle(.balanced)
         .fullScreenCover(isPresented: $isSessionPresented, onDismiss: session.reset) {
             SessionView(session: session)
+        }
+        .sheet(isPresented: $isSettingsPresented) {
+            NavigationStack {
+                SettingsView()
+                    .navigationTitle("Settings")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done", action: dismissSettings)
+                        }
+                    }
+            }
         }
         .sheet(item: $editingMachine, onDismiss: connectPendingMachine) { machine in
             EditMachineView(store: store,
@@ -122,6 +121,35 @@ struct ContentView<Session: RemoteSessionControlling,
     }
 
     private var detailView: some View {
+        connectDetailView
+    }
+
+    private var detailRoot: some View {
+        detailView
+            .navigationTitle(currentSection.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText,
+                        placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: "Search")
+            .toolbar {
+                detailToolbar
+            }
+    }
+
+    @ToolbarContentBuilder
+    private var detailToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button("Add Host", systemImage: "plus", action: addMachine)
+
+            Menu("More", systemImage: "ellipsis.circle") {
+                Button("Settings", systemImage: "gearshape", action: openSettings)
+                Divider()
+                Button("Refresh Machines", systemImage: "arrow.clockwise", action: refreshMachines)
+            }
+        }
+    }
+
+    private var connectDetailView: some View {
         ZStack {
             Color(.systemGroupedBackground)
                 .ignoresSafeArea()
@@ -361,6 +389,14 @@ struct ContentView<Session: RemoteSessionControlling,
         Task {
             await refreshMachineList(reason: "toolbar", marksMachinesChecking: false)
         }
+    }
+
+    private func openSettings() {
+        isSettingsPresented = true
+    }
+
+    private func dismissSettings() {
+        isSettingsPresented = false
     }
 
     private func refreshNearbyMacs() {
@@ -656,4 +692,5 @@ extension ContentView where Session == VNCSession,
 
 #Preview {
     ContentView()
+        .environment(SubscriptionStore())
 }

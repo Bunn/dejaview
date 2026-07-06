@@ -1,0 +1,124 @@
+# RevenueCat Integration
+
+This app uses the RevenueCat Swift Package products `RevenueCat` and `RevenueCatUI` from:
+
+`https://github.com/RevenueCat/purchases-ios-spm.git`
+
+The project is configured with an `upToNextMajorVersion` requirement starting at `5.43.0`; `Package.resolved` currently pins `5.80.2`.
+
+## Dashboard Setup
+
+1. In RevenueCat, create or select the Glassy View project and app.
+2. Create these products in the Test Store while developing, and mirror them in App Store Connect before release:
+   - `monthly`: monthly subscription
+   - `yearly`: yearly subscription
+   - `lifetime`: non-consumable lifetime unlock
+3. Create the entitlement identifier `Glassy View Pro`.
+4. Attach `monthly`, `yearly`, and `lifetime` to `Glassy View Pro`.
+5. Create an offering, usually `default`, and mark it as the default offering.
+6. Add packages for the three products:
+   - Monthly package -> `monthly`
+   - Annual/yearly package -> `yearly`
+   - Lifetime package -> `lifetime`
+7. Create a RevenueCat Paywall for the default offering.
+8. Enable Customer Center if your RevenueCat plan supports it.
+
+If RevenueCat requires a different entitlement identifier, update `SubscriptionStore.proEntitlementIdentifier` to match exactly.
+
+## App Configuration
+
+The app reads the public SDK key from the `RevenueCatAPIKey` key in `Support/Info.plist`, which expands from the `REVENUECAT_API_KEY` build setting.
+
+Debug currently sets:
+
+```text
+REVENUECAT_API_KEY = test_RMgvIJaZNhHZuuEztlmXnxXFXUj
+```
+
+Release is intentionally empty. Before App Store submission, set Release to the public Apple platform key from RevenueCat Project Settings -> API keys. Do not ship a Test Store key.
+
+## SwiftUI Entry Points
+
+`DejaViewApp` configures RevenueCat once at launch, owns a `SubscriptionStore`, injects it into the SwiftUI environment, refreshes customer info, and listens for customer info updates:
+
+```swift
+@State private var subscriptionStore = SubscriptionStore()
+
+init() {
+    RevenueCatConfiguration.configure()
+}
+
+WindowGroup {
+    ContentView()
+        .environment(subscriptionStore)
+        .task {
+            await subscriptionStore.refresh()
+            await subscriptionStore.observeCustomerInfoUpdates()
+        }
+}
+```
+
+`ContentView` exposes subscription actions from the More menu:
+
+```swift
+Button("Glassy View Pro", systemImage: proStatusSystemImage, action: presentSubscriptionManagement)
+Button("Present Paywall", systemImage: "creditcard", action: presentRevenueCatPaywall)
+Button("Customer Center", systemImage: "person.crop.circle", action: presentCustomerCenter)
+```
+
+## Entitlement Checking
+
+Gate Pro-only app behavior with `subscriptionStore.hasProAccess`. Internally this checks RevenueCat customer info:
+
+```swift
+customerInfo?.entitlements[SubscriptionStore.proEntitlementIdentifier]?.isActive == true
+```
+
+Use entitlement state for access decisions rather than checking product identifiers directly. Product identifiers are still used to find packages for manual purchases.
+
+## Purchases And Restore
+
+Manual purchases use the current offering and RevenueCat's async package purchase API:
+
+```swift
+let result = try await Purchases.shared.purchase(package: package)
+
+if !result.userCancelled {
+    apply(result.customerInfo)
+}
+```
+
+Restores are user-initiated:
+
+```swift
+let customerInfo = try await Purchases.shared.restorePurchases()
+apply(customerInfo)
+```
+
+Errors are logged through `AppLog.subscriptions` and surfaced in `SubscriptionManagementView`.
+
+## Paywall And Customer Center
+
+The app presents RevenueCat Paywalls with:
+
+```swift
+PaywallView()
+```
+
+Customer Center is presented with:
+
+```swift
+CustomerCenterView()
+```
+
+Customer Center is most useful once the app has real subscriptions because it lets users restore purchases, manage subscriptions, request refunds on iOS, and change plans when configured in RevenueCat and App Store Connect.
+
+## Best Practices
+
+- Keep RevenueCat configured once, early in app launch.
+- Keep release and development SDK keys separate.
+- Use RevenueCat entitlements as the source of truth for Pro access.
+- Use the current offering so product/order/paywall changes can happen remotely.
+- Always provide a Restore Purchases path.
+- Refresh customer info when entering purchase-sensitive flows.
+- Replace the Test Store key before submitting to the App Store.

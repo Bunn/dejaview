@@ -4,4 +4,5 @@ protocol BonjourBrowsing: AnyObject {
 
     func start()
     func stop()
+    func restart(keepingCurrentServices: Bool)
 }

@@ -28,6 +28,7 @@ struct ContentView<Session: RemoteSessionControlling,
     @State private var machineReachabilityStatuses: [UUID: MachineReachabilityStatus] = [:]
     @State private var machineReachabilityEndpoints: [UUID: String] = [:]
     @State private var reachabilityProbeGeneration = 0
+    @State private var shouldSkipNextSceneActiveRefresh = true
 
     private let appleScreenSharingHelpURL = URL(string: "https://support.apple.com/guide/mac-help/turn-screen-sharing-on-or-off-mh11848/mac")!
     private let reachabilityRefreshInterval: Duration = .seconds(30)
@@ -42,8 +43,8 @@ struct ContentView<Session: RemoteSessionControlling,
     var body: some View {
         NavigationSplitView {
             ConnectSidebarView(selection: $selectedSection,
-                               hostCount: store.machines.count + browser.services.count,
-                               nearbyCount: browser.services.count)
+                               hostCount: store.machines.count + resolvedServices.count,
+                               nearbyCount: resolvedServices.count)
         } detail: {
             detailRoot
         }
@@ -87,6 +88,10 @@ struct ContentView<Session: RemoteSessionControlling,
             browser.start()
             networkPathObserver.start()
             handlePendingIntentRequest()
+
+            if scenePhase == .active {
+                shouldSkipNextSceneActiveRefresh = false
+            }
         }
         .onDisappear {
             networkPathObserver.stop()
@@ -104,6 +109,12 @@ struct ContentView<Session: RemoteSessionControlling,
         }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active else { return }
+
+            guard !shouldSkipNextSceneActiveRefresh else {
+                shouldSkipNextSceneActiveRefresh = false
+                AppLog.ui.debug("Skipping initial scene active machine refresh")
+                return
+            }
 
             Task {
                 await refreshMachineList(reason: "sceneBecameActive", marksMachinesChecking: false)
@@ -182,7 +193,11 @@ struct ContentView<Session: RemoteSessionControlling,
     @ViewBuilder
     private var hostsContent: some View {
         if filteredMachines.isEmpty && filteredServices.isEmpty {
-            unavailableHostsView
+            if hasUnresolvedServices && !isSearching {
+                scanningPanel
+            } else {
+                unavailableHostsView
+            }
         } else {
             hostGrid
         }
@@ -310,12 +325,20 @@ struct ContentView<Session: RemoteSessionControlling,
     }
 
     private var filteredServices: [DiscoveredService] {
-        guard isSearching else { return browser.services }
+        guard isSearching else { return resolvedServices }
 
-        return browser.services.filter { service in
+        return resolvedServices.filter { service in
             service.name.localizedStandardContains(searchQuery) ||
             service.host?.localizedStandardContains(searchQuery) == true
         }
+    }
+
+    private var resolvedServices: [DiscoveredService] {
+        browser.services.filter(\.isResolved)
+    }
+
+    private var hasUnresolvedServices: Bool {
+        browser.services.contains { !$0.isResolved }
     }
 
     private var isSearching: Bool {
@@ -602,7 +625,7 @@ struct ContentView<Session: RemoteSessionControlling,
     private func refreshMachineList(reason: String, marksMachinesChecking: Bool) async {
         AppLog.ui.info("Refreshing machine list; reason=\(reason, privacy: .public) marksMachinesChecking=\(marksMachinesChecking, privacy: .public)")
         store.reload()
-        restartNearbyMacDiscovery()
+        restartNearbyMacDiscovery(keepingCurrentServices: true)
         await refreshSavedMachineReachability(showChecking: marksMachinesChecking)
     }
 
@@ -610,12 +633,13 @@ struct ContentView<Session: RemoteSessionControlling,
     private func refreshForNetworkPathChange(_ snapshot: NetworkPathSnapshot) async {
         AppLog.ui.info("Network path changed; \(snapshot.logDescription, privacy: .public)")
         store.reload()
-        restartNearbyMacDiscovery()
 
         switch snapshot.status {
         case .satisfied:
+            restartNearbyMacDiscovery(keepingCurrentServices: true)
             await refreshSavedMachineReachability(showChecking: true)
         case .requiresConnection, .unsatisfied:
+            restartNearbyMacDiscovery(keepingCurrentServices: false)
             setSavedMachineReachabilityStatuses(.unreachable)
         }
     }
@@ -656,9 +680,8 @@ struct ContentView<Session: RemoteSessionControlling,
         machineReachabilityEndpoints = machineReachabilityEndpoints.filter { activeIDs.contains($0.key) }
     }
 
-    private func restartNearbyMacDiscovery() {
-        browser.stop()
-        browser.start()
+    private func restartNearbyMacDiscovery(keepingCurrentServices: Bool) {
+        browser.restart(keepingCurrentServices: keepingCurrentServices)
     }
 
     private func setSavedMachineReachabilityStatuses(_ status: MachineReachabilityStatus) {

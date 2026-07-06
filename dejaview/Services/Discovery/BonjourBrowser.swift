@@ -21,6 +21,8 @@ final class BonjourBrowser: BonjourBrowsing {
     private var resolveRetryTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored
     private var resolveAttempts: [String: Int] = [:]
+    @ObservationIgnored
+    private var serviceIDsNeedingResolutionRefresh = Set<String>()
 
     @ObservationIgnored
     private let resolveTimeout: TimeInterval = 5
@@ -57,14 +59,31 @@ final class BonjourBrowser: BonjourBrowsing {
     }
 
     func stop() {
-        AppLog.discovery.info("Stopping Bonjour browser")
+        stop(keepingCurrentServices: false)
+    }
+
+    func restart(keepingCurrentServices: Bool) {
+        AppLog.discovery.info("Restarting Bonjour browser; keepingCurrentServices=\(keepingCurrentServices, privacy: .public)")
+
+        stop(keepingCurrentServices: keepingCurrentServices)
+        start()
+    }
+
+    private func stop(keepingCurrentServices: Bool) {
+        AppLog.discovery.info("Stopping Bonjour browser; keepingCurrentServices=\(keepingCurrentServices, privacy: .public)")
 
         browser?.cancel()
         browser = nil
 
         cancelAllResolutions()
         resolveAttempts.removeAll()
-        services.removeAll()
+
+        if keepingCurrentServices {
+            serviceIDsNeedingResolutionRefresh = Set(services.map(\.id))
+        } else {
+            serviceIDsNeedingResolutionRefresh.removeAll()
+            services.removeAll()
+        }
     }
 
     // MARK: - Private
@@ -81,6 +100,7 @@ final class BonjourBrowser: BonjourBrowsing {
             AppLog.discovery.warning("Bonjour browser waiting: \(String(describing: error), privacy: .public)")
             cancelAllResolutions()
             resolveAttempts.removeAll()
+            serviceIDsNeedingResolutionRefresh.removeAll()
             services.removeAll()
 
         case .failed(let error):
@@ -101,6 +121,7 @@ final class BonjourBrowser: BonjourBrowsing {
 
         cancelAllResolutions()
         resolveAttempts.removeAll()
+        serviceIDsNeedingResolutionRefresh.removeAll()
         services.removeAll()
 
         Task { @MainActor [weak self] in
@@ -123,7 +144,8 @@ final class BonjourBrowser: BonjourBrowsing {
             if let existing = services.first(where: { $0.id == name }) {
                 updated.append(existing)
 
-                if !existing.isResolved,
+                let needsResolutionRefresh = serviceIDsNeedingResolutionRefresh.remove(name) != nil
+                if (!existing.isResolved || needsResolutionRefresh),
                    resolveConnections[name] == nil,
                    resolveRetryTasks[name] == nil {
                     resolve(result, name: name, preferIPv4: true)
@@ -139,6 +161,7 @@ final class BonjourBrowser: BonjourBrowsing {
             AppLog.discovery.info("Screen Sharing service removed '\(removedName, privacy: .public)'")
             cancelResolution(for: removedName)
             resolveAttempts[removedName] = nil
+            serviceIDsNeedingResolutionRefresh.remove(removedName)
         }
 
         services = updated.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -269,6 +292,7 @@ final class BonjourBrowser: BonjourBrowsing {
             AppLog.discovery.error("Giving up resolving service '\(name, privacy: .public)' after \(attempts, privacy: .public) attempts")
             services.removeAll { $0.id == name && !$0.isResolved }
             resolveAttempts[name] = nil
+            serviceIDsNeedingResolutionRefresh.remove(name)
             return
         }
 

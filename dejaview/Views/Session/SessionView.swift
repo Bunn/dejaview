@@ -4,13 +4,17 @@ import OSLog
 /// Full-screen remote session with floating Liquid Glass controls.
 struct SessionView<Session: RemoteSessionControlling>: View {
     @ObservedObject var session: Session
+    @Environment(SubscriptionStore.self) private var subscriptionStore
     @Environment(\.dismiss) private var dismiss
 
+    @State private var isSessionPaywallPresented = false
     @State private var showsInputBar = false
     @State private var textToSend = ""
     @State private var streamZoomScale: CGFloat = 1
     @State private var followsCursorWhenZoomed = true
     @FocusState private var inputFocused: Bool
+
+    private let freeSessionDuration: Duration = .seconds(120)
 
     var body: some View {
         ZStack {
@@ -52,6 +56,10 @@ struct SessionView<Session: RemoteSessionControlling>: View {
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $isSessionPaywallPresented,
+               onDismiss: handleSessionPaywallDismissed) {
+            RevenueCatPaywallSheet(onProAccessGranted: handleSessionProAccessGranted)
+        }
         .onAppear {
             logDisplayControlState(reason: "sessionViewAppeared")
         }
@@ -66,6 +74,14 @@ struct SessionView<Session: RemoteSessionControlling>: View {
         }
         .onChange(of: showsInputBar) { _, _ in
             logDisplayControlState(reason: "inputBarVisibilityChanged")
+        }
+        .onChange(of: subscriptionStore.hasProAccess) { _, hasProAccess in
+            if hasProAccess {
+                handleSessionProAccessGranted()
+            }
+        }
+        .task(id: session.status == .connected) {
+            await enforceFreeSessionLimitIfNeeded()
         }
     }
 
@@ -175,6 +191,41 @@ struct SessionView<Session: RemoteSessionControlling>: View {
             : session.displays.map(\.logDescription).joined(separator: "; ")
 
         AppLog.ui.info("Session display controls state; reason=\(reason, privacy: .public) status=\(self.session.status.logDescription, privacy: .public) displayCount=\(displayCount, privacy: .public) selection=\(self.session.displaySelection.logDescription, privacy: .public) bottomControlsVisible=\(bottomControlsVisible, privacy: .public) displayControlVisible=\(displayControlVisible, privacy: .public) displayOptionCount=\(displayOptionCount, privacy: .public) displayOptions=\(optionDescription, privacy: .public) inputBarVisible=\(self.showsInputBar, privacy: .public) layout=\(layoutDescription, privacy: .public)")
+    }
+
+    private func enforceFreeSessionLimitIfNeeded() async {
+        guard session.status == .connected else { return }
+        guard !subscriptionStore.hasProAccess else { return }
+
+        try? await Task.sleep(for: freeSessionDuration)
+
+        guard !Task.isCancelled else { return }
+        guard session.status == .connected else { return }
+        guard !subscriptionStore.hasProAccess else { return }
+        guard !isSessionPaywallPresented else { return }
+
+        AppLog.subscriptions.info("Free session limit reached; presenting paywall")
+        isSessionPaywallPresented = true
+    }
+
+    private func handleSessionProAccessGranted() {
+        guard isSessionPaywallPresented else { return }
+
+        AppLog.subscriptions.info("Pro access granted from session paywall; keeping remote session active")
+        isSessionPaywallPresented = false
+    }
+
+    private func handleSessionPaywallDismissed() {
+        Task {
+            await subscriptionStore.refresh()
+
+            guard session.status == .connected else { return }
+            guard !subscriptionStore.hasProAccess else { return }
+
+            AppLog.subscriptions.info("Session paywall dismissed without Pro access; ending remote session")
+            session.disconnect()
+            dismiss()
+        }
     }
 
     private var inputBar: some View {

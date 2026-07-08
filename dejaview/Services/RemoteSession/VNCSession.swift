@@ -19,14 +19,29 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     /// Current framebuffer, published outside `objectWillChange` so that
     /// per-frame updates don't invalidate SwiftUI (see the protocol note).
     private let imageSubject = CurrentValueSubject<CGImage?, Never>(nil)
+    private let framebufferUpdateSubject = CurrentValueSubject<RemoteFramebufferUpdate, Never>(.empty)
+    private let cursorSubject = CurrentValueSubject<RemoteCursor?, Never>(nil)
+    private var currentImage: CGImage?
 
     var image: CGImage? {
-        get { imageSubject.value }
-        set { imageSubject.send(newValue) }
+        currentImage
     }
 
     var imagePublisher: AnyPublisher<CGImage?, Never> {
         imageSubject.eraseToAnyPublisher()
+    }
+
+    var framebufferUpdatePublisher: AnyPublisher<RemoteFramebufferUpdate, Never> {
+        framebufferUpdateSubject.eraseToAnyPublisher()
+    }
+
+    var cursor: RemoteCursor? {
+        get { cursorSubject.value }
+        set { cursorSubject.send(newValue) }
+    }
+
+    var cursorPublisher: AnyPublisher<RemoteCursor?, Never> {
+        cursorSubject.eraseToAnyPublisher()
     }
 
     var displayOptions: [RemoteDisplayOption] {
@@ -56,6 +71,7 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     private var username = ""
     private var password = ""
     private var reconnectPending = false
+    private var heldModifierKeys: Set<RemoteModifierKey> = []
     private static let combinedFramebufferAspectRatioThreshold: CGFloat = 2.4
 
     // MARK: - Lifecycle
@@ -91,6 +107,7 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
 
     func disconnect() {
         AppLog.session.info("Disconnect requested")
+        releaseHeldModifiers()
         connection?.disconnect()
     }
 
@@ -98,9 +115,11 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     func reset() {
         AppLog.session.info("Resetting session state")
         reconnectPending = false
+        releaseHeldModifiers()
         connection?.delegate = nil
         connection = nil
-        image = nil
+        publishFramebuffer(nil)
+        cursor = nil
         displays = []
         displaySelection = .all
         status = .idle
@@ -143,6 +162,7 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
         }
 
         AppLog.session.info("Applying settings change by reconnecting session")
+        releaseHeldModifiers()
         reconnectPending = true
         connection?.disconnect()
     }
@@ -268,34 +288,81 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
         leftButtonUp(at: cursorLocation)
     }
 
+    // MARK: - Held keyboard modifiers
+
+    func setModifier(_ modifier: RemoteModifierKey, isPressed: Bool) {
+        let isCurrentlyPressed = heldModifierKeys.contains(modifier)
+        guard isPressed != isCurrentlyPressed else { return }
+
+        if isPressed {
+            heldModifierKeys.insert(modifier)
+            connection?.keyDown(modifier.keyCode)
+        } else {
+            heldModifierKeys.remove(modifier)
+            connection?.keyUp(modifier.keyCode)
+        }
+
+        AppLog.input.debug("Remote modifier changed; modifier=\(modifier.rawValue, privacy: .public) pressed=\(isPressed, privacy: .public)")
+    }
+
+    func releaseHeldModifiers() {
+        guard !heldModifierKeys.isEmpty else { return }
+
+        for modifier in RemoteModifierKey.allCases.reversed() where heldModifierKeys.contains(modifier) {
+            connection?.keyUp(modifier.keyCode)
+        }
+
+        heldModifierKeys.removeAll()
+        AppLog.input.debug("Released held remote modifiers")
+    }
+
     // MARK: - Keyboard input
 
     func sendText(_ text: String, modifiers: [VNCKeyCode] = []) {
         guard let connection else { return }
 
         AppLog.input.debug("Sending text to remote; characterCount=\(text.count, privacy: .public) modifiers=\(modifiers.count, privacy: .public)")
-        modifiers.forEach { connection.keyDown($0) }
+        let transientModifiers = transientModifiers(from: modifiers)
+        transientModifiers.forEach { connection.keyDown($0) }
 
         for keyCode in VNCKeyCode.keyCodesFrom(characters: text) {
             connection.keyDown(keyCode)
             connection.keyUp(keyCode)
         }
 
-        modifiers.reversed().forEach { connection.keyUp($0) }
+        transientModifiers.reversed().forEach { connection.keyUp($0) }
     }
 
     func sendKey(_ keyCode: VNCKeyCode, modifiers: [VNCKeyCode] = []) {
         guard let connection else { return }
 
         AppLog.input.debug("Sending key to remote; key=\(String(describing: keyCode), privacy: .public) modifiers=\(modifiers.count, privacy: .public)")
-        modifiers.forEach { connection.keyDown($0) }
+        let transientModifiers = transientModifiers(from: modifiers)
+        transientModifiers.forEach { connection.keyDown($0) }
         connection.keyDown(keyCode)
         connection.keyUp(keyCode)
-        modifiers.reversed().forEach { connection.keyUp($0) }
+        transientModifiers.reversed().forEach { connection.keyUp($0) }
     }
 
     func sendReturn() {
         sendKey(.return)
+    }
+
+    private func transientModifiers(from modifiers: [VNCKeyCode]) -> [VNCKeyCode] {
+        let heldModifierRawValues = Set(heldModifierKeys.map(\.keyCode.rawValue))
+
+        return modifiers.filter { !heldModifierRawValues.contains($0.rawValue) }
+    }
+
+    private func publishFramebuffer(_ image: CGImage?, dirtyRect: CGRect? = nil) {
+        currentImage = image
+
+        if dirtyRect == nil {
+            imageSubject.send(image)
+        }
+
+        framebufferUpdateSubject.send(RemoteFramebufferUpdate(image: image,
+                                                              dirtyRect: dirtyRect))
     }
 
     // MARK: - Display selection
@@ -504,8 +571,10 @@ extension VNCSession: VNCConnectionDelegate {
                 }
 
                 self.connection?.delegate = nil
+                self.releaseHeldModifiers()
                 self.connection = nil
-                self.image = nil
+                self.publishFramebuffer(nil)
+                self.cursor = nil
 
                 if self.reconnectPending {
                     // Settings changed mid-session: reconnect with new settings.
@@ -565,7 +634,7 @@ extension VNCSession: VNCConnectionDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
 
-            self.image = cgImage
+            self.publishFramebuffer(cgImage)
             self.updateDisplays(displays)
 
             if let cgImage {
@@ -592,7 +661,7 @@ extension VNCSession: VNCConnectionDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
 
-            self.image = cgImage
+            self.publishFramebuffer(cgImage)
             self.updateDisplays(displays)
 
             if let cgImage {
@@ -607,17 +676,33 @@ extension VNCSession: VNCConnectionDelegate {
                     didUpdateFramebuffer framebuffer: VNCFramebuffer,
                     x: UInt16, y: UInt16,
                     width: UInt16, height: UInt16) {
-        // TODO: For better performance, only invalidate the dirty rect
-        // (x/y/width/height) instead of republishing the whole image.
         let cgImage = framebuffer.cgImage
+        let dirtyRect = CGRect(x: CGFloat(x),
+                               y: CGFloat(y),
+                               width: CGFloat(width),
+                               height: CGFloat(height))
 
         Task { @MainActor [weak self] in
-            self?.image = cgImage
+            self?.publishFramebuffer(cgImage, dirtyRect: dirtyRect)
         }
     }
 
     func connection(_ connection: VNCConnection,
                     didUpdateCursor cursor: VNCCursor) {
-        // TODO: Render the remote cursor shape if desired.
+        let remoteCursor: RemoteCursor?
+
+        if cursor.isEmpty {
+            remoteCursor = nil
+        } else if let image = cursor.cgImage {
+            remoteCursor = RemoteCursor(image: image,
+                                        hotspot: cursor.cgHotspot,
+                                        size: cursor.cgSize)
+        } else {
+            remoteCursor = nil
+        }
+
+        Task { @MainActor [weak self] in
+            self?.cursor = remoteCursor
+        }
     }
 }

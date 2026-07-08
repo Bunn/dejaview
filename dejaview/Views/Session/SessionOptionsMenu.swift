@@ -3,7 +3,7 @@ import SwiftUI
 /// Context menu for session options (bottom-right of the session).
 struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
     // Safe to observe: framebuffer updates bypass objectWillChange (see
-    // RemoteSessionControlling.imagePublisher), so this only re-renders on
+    // RemoteSessionControlling.framebufferUpdatePublisher), so this only re-renders on
     // actual state changes — which the menu checkmarks need to reflect.
     @ObservedObject var session: Session
 

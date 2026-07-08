@@ -13,6 +13,7 @@ struct SessionView<Session: RemoteSessionControlling>: View {
     @State private var shouldEndSessionOnPaywallDismiss = false
     @State private var opensPaywallAfterFreeSessionInfoDismissal = false
     @State private var pendingPaywallEndsSessionOnDismiss = false
+    @State private var heldModifierKeys: Set<RemoteModifierKey> = []
     @State private var showsInputBar = false
     @State private var textToSend = ""
     @State private var streamZoomScale: CGFloat = 1
@@ -84,6 +85,9 @@ struct SessionView<Session: RemoteSessionControlling>: View {
         }
         .onChange(of: session.status) { _, _ in
             logDisplayControlState(reason: "statusChanged")
+            if session.status != .connected {
+                releaseHeldModifierKeys()
+            }
         }
         .onChange(of: session.displays) { _, _ in
             logDisplayControlState(reason: "displayLayoutChanged")
@@ -93,6 +97,9 @@ struct SessionView<Session: RemoteSessionControlling>: View {
         }
         .onChange(of: showsInputBar) { _, _ in
             logDisplayControlState(reason: "inputBarVisibilityChanged")
+            if !showsInputBar {
+                releaseHeldModifierKeys()
+            }
         }
         .onChange(of: subscriptionStore.hasProAccess) { _, hasProAccess in
             if hasProAccess {
@@ -174,9 +181,7 @@ struct SessionView<Session: RemoteSessionControlling>: View {
     private var controlPill: some View {
         HStack(spacing: 2) {
             Button {
-                showsInputBar.toggle()
-                AppLog.ui.info("Software input bar visibility changed; visible=\(self.showsInputBar, privacy: .public)")
-                inputFocused = showsInputBar
+                toggleInputBar()
             } label: {
                 Image(systemName: "keyboard")
                     .padding(12)
@@ -185,6 +190,7 @@ struct SessionView<Session: RemoteSessionControlling>: View {
 
             Button {
                 AppLog.ui.info("Session close button tapped")
+                releaseHeldModifierKeys()
                 session.disconnect()
                 dismiss()
             } label: {
@@ -261,6 +267,7 @@ struct SessionView<Session: RemoteSessionControlling>: View {
             guard !subscriptionStore.hasProAccess else { return }
 
             AppLog.subscriptions.info("Session paywall dismissed without Pro access; ending remote session")
+            releaseHeldModifierKeys()
             session.disconnect()
             dismiss()
         }
@@ -288,6 +295,8 @@ struct SessionView<Session: RemoteSessionControlling>: View {
     }
 
     private func presentSessionPaywall(endsSessionOnDismiss: Bool) {
+        releaseHeldModifierKeys()
+
         if isSessionPaywallPresented {
             shouldEndSessionOnPaywallDismiss = shouldEndSessionOnPaywallDismiss || endsSessionOnDismiss
             return
@@ -304,9 +313,28 @@ struct SessionView<Session: RemoteSessionControlling>: View {
         isSessionPaywallPresented = true
     }
 
+    private func toggleInputBar() {
+        showsInputBar.toggle()
+
+        if !showsInputBar {
+            releaseHeldModifierKeys()
+        }
+
+        AppLog.ui.info("Software input bar visibility changed; visible=\(self.showsInputBar, privacy: .public)")
+        inputFocused = showsInputBar
+    }
+
+    private func releaseHeldModifierKeys() {
+        guard !heldModifierKeys.isEmpty else { return }
+
+        session.releaseHeldModifiers()
+        heldModifierKeys.removeAll()
+    }
+
     private var inputBar: some View {
         VStack(spacing: 8) {
-            SessionShortcutStrip(session: session) {
+            SessionShortcutStrip(session: session,
+                                 heldModifierKeys: $heldModifierKeys) {
                 inputFocused = true
             }
 

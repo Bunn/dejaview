@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SessionShortcutStrip<Session: RemoteSessionInputControlling>: View {
     let session: Session
+    @Binding var heldModifierKeys: Set<RemoteModifierKey>
     let onSend: () -> Void
 
     private let primaryActions: [SessionShortcutAction] = [
@@ -34,6 +35,15 @@ struct SessionShortcutStrip<Session: RemoteSessionInputControlling>: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
+                ForEach(RemoteModifierKey.allCases) { modifier in
+                    modifierButton(for: modifier)
+                }
+
+                Divider()
+                    .frame(height: 22)
+                    .overlay(.white.opacity(0.28))
+                    .padding(.horizontal, 2)
+
                 ForEach(primaryActions) { action in
                     shortcutButton(for: action)
                 }
@@ -46,6 +56,36 @@ struct SessionShortcutStrip<Session: RemoteSessionInputControlling>: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .liquidGlass(in: Capsule())
+    }
+
+    private func modifierButton(for modifier: RemoteModifierKey) -> some View {
+        let isActive = heldModifierKeys.contains(modifier)
+
+        return Button {
+            setModifier(modifier, isActive: !isActive)
+        } label: {
+            Text(modifier.title)
+                .font(.caption.weight(.semibold))
+                .frame(minWidth: 42, minHeight: 30)
+                .padding(.horizontal, 8)
+                .background {
+                    if isActive {
+                        Capsule()
+                            .fill(.white.opacity(0.20))
+                    }
+                }
+                .overlay {
+                    if isActive {
+                        Capsule()
+                            .stroke(.white.opacity(0.32), lineWidth: 1)
+                    }
+                }
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .accessibilityLabel(modifier.title)
+        .accessibilityValue(isActive ? "Held" : "Not held")
     }
 
     @ViewBuilder
@@ -98,6 +138,19 @@ struct SessionShortcutStrip<Session: RemoteSessionInputControlling>: View {
     private func send(_ action: SessionShortcutAction) {
         action.send(through: session)
         onSend()
+    }
+
+    private func setModifier(_ modifier: RemoteModifierKey, isActive: Bool) {
+        var updatedModifierKeys = heldModifierKeys
+
+        if isActive {
+            updatedModifierKeys.insert(modifier)
+        } else {
+            updatedModifierKeys.remove(modifier)
+        }
+
+        heldModifierKeys = updatedModifierKeys
+        session.setModifier(modifier, isPressed: isActive)
     }
 }
 

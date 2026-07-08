@@ -2,7 +2,7 @@ import Combine
 import SwiftUI
 import UIKit
 
-/// Renders the remote framebuffer into a CALayer and maps touches
+/// Renders the remote framebuffer into a dirty-rect aware view and maps touches
 /// to VNC pointer events.
 ///
 /// One finger (see `RemoteTouchMode`):
@@ -19,8 +19,8 @@ import UIKit
 /// recenters the visible stream around the remote cursor.
 struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable {
     // Deliberately NOT @ObservedObject: frames are pushed straight to the
-    // view via `imagePublisher` (see makeUIView), so SwiftUI never needs to
-    // re-render this representable at framebuffer rate.
+    // view via `framebufferUpdatePublisher` (see makeUIView), so SwiftUI never
+    // needs to re-render this representable at framebuffer rate.
     let session: Session
     var selectedFramebufferFrame: CGRect?
     @Binding var zoomScale: CGFloat
@@ -32,11 +32,15 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         view.onZoomScaleChanged = context.coordinator.setZoomScale(_:)
         view.setVisibleFramebufferFrame(selectedFramebufferFrame)
 
-        // Frames bypass SwiftUI entirely: publisher → CALayer.
+        // Frames bypass SwiftUI entirely: publisher -> UIKit drawing.
         // CurrentValueSubject replays the latest frame on subscription.
-        context.coordinator.imageSubscription = session.imagePublisher
-            .sink { [weak view] image in
-                view?.display(image: image)
+        context.coordinator.framebufferUpdateSubscription = session.framebufferUpdatePublisher
+            .sink { [weak view] update in
+                view?.display(framebufferUpdate: update)
+            }
+        context.coordinator.cursorSubscription = session.cursorPublisher
+            .sink { [weak view] cursor in
+                view?.display(cursor: cursor)
             }
 
         // First responder is claimed in didMoveToWindow, once the view is
@@ -58,7 +62,8 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
     final class Coordinator {
         var zoomScale: Binding<CGFloat>
-        var imageSubscription: AnyCancellable?
+        var framebufferUpdateSubscription: AnyCancellable?
+        var cursorSubscription: AnyCancellable?
 
         init(zoomScale: Binding<CGFloat>) {
             self.zoomScale = zoomScale
@@ -76,7 +81,9 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
         private var fullImageSize: CGSize = .zero
         private var selectedFramebufferFrame: CGRect?
-        private let imageLayer = CALayer()
+        private let framebufferView = FramebufferImageView()
+        private let cursorLayer = CALayer()
+        private var remoteCursor: RemoteCursor?
         private weak var pointerScrollPan: UIPanGestureRecognizer?
 
         private var zoomScale: CGFloat = 1
@@ -109,6 +116,64 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         private let minimumZoomScale: CGFloat = 1
         private let maximumZoomScale: CGFloat = 4
 
+        private final class FramebufferImageView: UIView {
+            private var image: UIImage?
+            private var fullImageSize: CGSize = .zero
+            private var visibleFramebufferFrame: CGRect = .zero
+
+            override init(frame: CGRect) {
+                super.init(frame: frame)
+
+                isOpaque = true
+                backgroundColor = .black
+                clipsToBounds = true
+                contentMode = .redraw
+                layer.magnificationFilter = .linear
+                layer.minificationFilter = .linear
+            }
+
+            required init?(coder: NSCoder) {
+                fatalError("init(coder:) has not been implemented")
+            }
+
+            func setFramebuffer(image: CGImage?,
+                                imageSize: CGSize,
+                                visibleFrame: CGRect) {
+                self.image = image.map(UIImage.init(cgImage:))
+                setFramebuffer(imageSize: imageSize,
+                               visibleFrame: visibleFrame)
+            }
+
+            func setFramebuffer(imageSize: CGSize,
+                                visibleFrame: CGRect) {
+                fullImageSize = imageSize
+                visibleFramebufferFrame = visibleFrame
+            }
+
+            override func draw(_ rect: CGRect) {
+                guard let image,
+                      fullImageSize.width > 0,
+                      fullImageSize.height > 0,
+                      visibleFramebufferFrame.width > 0,
+                      visibleFramebufferFrame.height > 0,
+                      bounds.width > 0,
+                      bounds.height > 0 else {
+                    return
+                }
+
+                guard let context = UIGraphicsGetCurrentContext() else { return }
+
+                let scale = bounds.width / visibleFramebufferFrame.width
+                let drawRect = CGRect(x: -visibleFramebufferFrame.minX * scale,
+                                      y: -visibleFramebufferFrame.minY * scale,
+                                      width: fullImageSize.width * scale,
+                                      height: fullImageSize.height * scale)
+
+                context.interpolationQuality = .default
+                image.draw(in: drawRect)
+            }
+        }
+
         /// Points of finger travel per wheel step. Wheel steps only move a
         /// few lines each on macOS, so this needs to be small — and it acts
         /// as a sensitivity dial (lower = faster scrolling).
@@ -134,10 +199,13 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
             backgroundColor = .black
             clipsToBounds = true
-            imageLayer.contentsGravity = .resize
-            imageLayer.magnificationFilter = .linear
-            imageLayer.minificationFilter = .linear
-            layer.addSublayer(imageLayer)
+            addSubview(framebufferView)
+
+            cursorLayer.contentsGravity = .resize
+            cursorLayer.magnificationFilter = .nearest
+            cursorLayer.minificationFilter = .nearest
+            cursorLayer.isHidden = true
+            layer.addSublayer(cursorLayer)
             isMultipleTouchEnabled = true
 
             let pinch = UIPinchGestureRecognizer(target: self,
@@ -181,7 +249,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
         override func layoutSubviews() {
             super.layoutSubviews()
-            updateImageLayerFrame()
+            updateFramebufferViewFrame()
         }
 
         override func didMoveToWindow() {
@@ -237,24 +305,34 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
             unregisterKeyWindowObservers()
         }
 
-        func display(image: CGImage?) {
+        func display(framebufferUpdate update: RemoteFramebufferUpdate) {
             let previousImageSize = imageSize
-            imageLayer.contents = image
 
-            if let image {
+            if let image = update.image {
                 fullImageSize = CGSize(width: image.width, height: image.height)
             } else {
                 fullImageSize = .zero
             }
 
-            updateImageLayerContentsRect()
+            framebufferView.setFramebuffer(image: update.image,
+                                           imageSize: fullImageSize,
+                                           visibleFrame: visibleFramebufferFrame)
 
-            if imageSize != previousImageSize || viewportCenter == nil {
+            let imageSizeChanged = imageSize != previousImageSize
+
+            if imageSizeChanged || viewportCenter == nil {
                 resetViewportCenter()
-                AppLog.ui.info("Remote desktop image size changed; fullImageSize=\(Self.sizeDescription(self.fullImageSize), privacy: .public) selectedFramebufferFrame=\(Self.rectDescription(self.selectedFramebufferFrame), privacy: .public) visibleFramebufferFrame=\(Self.rectDescription(self.visibleFramebufferFrame), privacy: .public) contentsRect=\(Self.rectDescription(self.imageLayer.contentsRect), privacy: .public)")
+                AppLog.ui.info("Remote desktop image size changed; fullImageSize=\(Self.sizeDescription(self.fullImageSize), privacy: .public) selectedFramebufferFrame=\(Self.rectDescription(self.selectedFramebufferFrame), privacy: .public) visibleFramebufferFrame=\(Self.rectDescription(self.visibleFramebufferFrame), privacy: .public)")
             }
 
-            updateImageLayerFrame()
+            updateFramebufferViewFrame()
+            invalidateFramebuffer(dirtyRect: imageSizeChanged ? nil : update.dirtyRect)
+        }
+
+        func display(cursor: RemoteCursor?) {
+            remoteCursor = cursor
+            cursorLayer.contents = cursor?.image
+            updateCursorLayerFrame()
         }
 
         func setVisibleFramebufferFrame(_ frame: CGRect?) {
@@ -262,17 +340,20 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
             let previousSelectedFrame = selectedFramebufferFrame
             selectedFramebufferFrame = frame
 
-            updateImageLayerContentsRect()
+            updateFramebufferViewSource()
 
             let visibleFrame = visibleFramebufferFrame
 
             if visibleFrame != previousVisibleFrame {
                 resetViewportCenter()
-                updateImageLayerFrame()
+                updateFramebufferViewFrame()
+                framebufferView.setNeedsDisplay()
+            } else {
+                updateCursorLayerFrame()
             }
 
             if selectedFramebufferFrame != previousSelectedFrame || visibleFrame != previousVisibleFrame {
-                AppLog.ui.info("Remote desktop visible framebuffer changed; selectedFramebufferFrame=\(Self.rectDescription(self.selectedFramebufferFrame), privacy: .public) visibleFramebufferFrame=\(Self.rectDescription(visibleFrame), privacy: .public) fullImageSize=\(Self.sizeDescription(self.fullImageSize), privacy: .public) contentsRect=\(Self.rectDescription(self.imageLayer.contentsRect), privacy: .public)")
+                AppLog.ui.info("Remote desktop visible framebuffer changed; selectedFramebufferFrame=\(Self.rectDescription(self.selectedFramebufferFrame), privacy: .public) visibleFramebufferFrame=\(Self.rectDescription(visibleFrame), privacy: .public) fullImageSize=\(Self.sizeDescription(self.fullImageSize), privacy: .public)")
             }
         }
 
@@ -348,20 +429,39 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
             renderScale * zoomScale
         }
 
-        private func updateImageLayerContentsRect() {
-            let fullFrame = fullFramebufferFrame
-            let visibleFrame = visibleFramebufferFrame
+        private func updateFramebufferViewSource() {
+            framebufferView.setFramebuffer(imageSize: fullImageSize,
+                                           visibleFrame: visibleFramebufferFrame)
+        }
 
-            guard fullFrame.width > 0, fullFrame.height > 0,
-                  visibleFrame.width > 0, visibleFrame.height > 0 else {
-                imageLayer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+        private func invalidateFramebuffer(dirtyRect: CGRect?) {
+            guard framebufferView.frame.width > 0,
+                  framebufferView.frame.height > 0 else { return }
+
+            guard let dirtyRect else {
+                framebufferView.setNeedsDisplay()
                 return
             }
 
-            imageLayer.contentsRect = CGRect(x: visibleFrame.minX / fullFrame.width,
-                                             y: visibleFrame.minY / fullFrame.height,
-                                             width: visibleFrame.width / fullFrame.width,
-                                             height: visibleFrame.height / fullFrame.height)
+            let visibleFrame = visibleFramebufferFrame
+            let visibleDirtyRect = dirtyRect.intersection(visibleFrame)
+
+            guard !visibleDirtyRect.isNull,
+                  !visibleDirtyRect.isEmpty else { return }
+
+            let scale = effectiveScale
+            let localDirtyRect = CGRect(x: (visibleDirtyRect.minX - visibleFrame.minX) * scale,
+                                        y: (visibleDirtyRect.minY - visibleFrame.minY) * scale,
+                                        width: visibleDirtyRect.width * scale,
+                                        height: visibleDirtyRect.height * scale)
+                .integral
+                .insetBy(dx: -1, dy: -1)
+                .intersection(framebufferView.bounds)
+
+            guard !localDirtyRect.isNull,
+                  !localDirtyRect.isEmpty else { return }
+
+            framebufferView.setNeedsDisplay(localDirtyRect)
         }
 
         private func resetViewportCenter() {
@@ -379,7 +479,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                   bounds.width > 0, bounds.height > 0 else { return nil }
 
             let scale = effectiveScale
-            let origin = imageLayer.frame.origin
+            let origin = framebufferView.frame.origin
             let visibleFrame = visibleFramebufferFrame
 
             let fx = (point.x - origin.x) / scale
@@ -460,7 +560,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                                          y: viewportCenterY)
             }
 
-            updateImageLayerFrame()
+            updateFramebufferViewFrame()
 
             if notify {
                 onZoomScaleChanged?(clamped)
@@ -471,10 +571,11 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
             min(max(zoomScale, minimumZoomScale), maximumZoomScale)
         }
 
-        private func updateImageLayerFrame() {
+        private func updateFramebufferViewFrame() {
             guard imageSize.width > 0, imageSize.height > 0,
                   bounds.width > 0, bounds.height > 0 else {
-                imageLayer.frame = .zero
+                framebufferView.frame = .zero
+                updateCursorLayerFrame()
                 return
             }
 
@@ -501,10 +602,43 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                 origin.y = min(max(origin.y, bounds.height - renderedSize.height), 0)
             }
 
+            UIView.performWithoutAnimation {
+                framebufferView.frame = CGRect(origin: origin, size: renderedSize)
+            }
+
+            updateCursorLayerFrame()
+        }
+
+        private func updateCursorLayerFrame() {
+            guard let remoteCursor,
+                  let localCursor = localCursorLocation(),
+                  remoteCursor.size.width > 0,
+                  remoteCursor.size.height > 0,
+                  framebufferView.frame.width > 0,
+                  framebufferView.frame.height > 0 else {
+                cursorLayer.isHidden = true
+                cursorLayer.frame = .zero
+                return
+            }
+
+            let scale = effectiveScale
+            let cursorSize = CGSize(width: remoteCursor.size.width * scale,
+                                    height: remoteCursor.size.height * scale)
+            let hotspot = CGPoint(x: remoteCursor.hotspot.x * scale,
+                                  y: remoteCursor.hotspot.y * scale)
+            let cursorOrigin = CGPoint(x: framebufferView.frame.minX + localCursor.x * scale - hotspot.x,
+                                       y: framebufferView.frame.minY + localCursor.y * scale - hotspot.y)
+
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            imageLayer.frame = CGRect(origin: origin, size: renderedSize)
+            cursorLayer.isHidden = false
+            cursorLayer.frame = CGRect(origin: cursorOrigin, size: cursorSize)
             CATransaction.commit()
+        }
+
+        private func cursorLocationDidChange() {
+            followCursorIfNeeded()
+            updateCursorLayerFrame()
         }
 
         private func clampedViewportCenter(_ center: CGPoint,
@@ -544,7 +678,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                   let localCursor = localCursorLocation() else { return }
 
             viewportCenter = localCursor
-            updateImageLayerFrame()
+            updateFramebufferViewFrame()
         }
 
         // MARK: - Two-finger gestures
@@ -578,7 +712,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                 }
             }
 
-            followCursorIfNeeded()
+            cursorLocationDidChange()
         }
 
         @objc private func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
@@ -629,7 +763,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
             becomeFirstResponderIfAppropriate()
             session.moveCursor(to: point)
-            followCursorIfNeeded()
+            cursorLocationDidChange()
         }
 
         private func forwardScroll(delta: CGPoint,
@@ -788,7 +922,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                 let fbDelta = CGPoint(x: delta.x / scale, y: delta.y / scale)
 
                 session.moveCursor(by: fbDelta, dragging: isDragging)
-                followCursorIfNeeded()
+                cursorLocationDidChange()
 
             case .direct:
                 guard let point = framebufferPoint(for: location) else { return }
@@ -801,6 +935,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
                 // Button stays pressed while coordinates change → drag.
                 session.leftButtonDown(at: point)
+                cursorLocationDidChange()
             }
         }
 
@@ -835,7 +970,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                 let point = framebufferPoint(for: touch.location(in: self))
                     ?? session.cursorLocation
                 session.leftButtonUp(at: point)
-                followCursorIfNeeded()
+                cursorLocationDidChange()
             }
         }
 
@@ -853,6 +988,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
             if directPressed {
                 directPressed = false
                 session.leftButtonUp(at: session.cursorLocation)
+                cursorLocationDidChange()
             }
 
             if activeTouchCount(event) == 0 { multiTouchActive = false }
@@ -872,6 +1008,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
             if directPressed {
                 directPressed = false
                 session?.leftButtonUp(at: session?.cursorLocation ?? .zero)
+                cursorLocationDidChange()
             }
         }
 
@@ -895,6 +1032,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
             pendingPressPoint = nil
             directPressed = true
             session?.leftButtonDown(at: point)
+            cursorLocationDidChange()
         }
 
         private func cancelPendingPress() {

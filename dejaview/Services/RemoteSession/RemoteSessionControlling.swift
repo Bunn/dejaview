@@ -16,6 +16,8 @@ protocol RemoteSessionInputControlling: AnyObject {
     func scroll(_ direction: RemoteScrollDirection, steps: UInt32)
     func pressAtCursor()
     func releaseAtCursor()
+    func setModifier(_ modifier: RemoteModifierKey, isPressed: Bool)
+    func releaseHeldModifiers()
     func sendText(_ text: String, modifiers: [VNCKeyCode])
     func sendKey(_ keyCode: VNCKeyCode, modifiers: [VNCKeyCode])
     func sendReturn()
@@ -24,12 +26,16 @@ protocol RemoteSessionInputControlling: AnyObject {
 protocol RemoteSessionControlling: ObservableObject, RemoteSessionInputControlling {
     var status: RemoteSessionStatus { get }
 
-    /// Current framebuffer. Deliberately NOT part of `objectWillChange`:
-    /// frames arrive at display rate, and invalidating SwiftUI for each one
-    /// causes constant re-layout (which, among other things, makes presented
-    /// menus flicker). Observe `imagePublisher` instead.
+    /// Current framebuffer metadata. Deliberately NOT part of
+    /// `objectWillChange`: frames arrive at display rate, and invalidating
+    /// SwiftUI for each one causes constant re-layout (which, among other
+    /// things, makes presented menus flicker). Observe
+    /// `framebufferUpdatePublisher` for rendering.
     var image: CGImage? { get }
     var imagePublisher: AnyPublisher<CGImage?, Never> { get }
+    var framebufferUpdatePublisher: AnyPublisher<RemoteFramebufferUpdate, Never> { get }
+    var cursor: RemoteCursor? { get }
+    var cursorPublisher: AnyPublisher<RemoteCursor?, Never> { get }
     var quality: RemoteSessionQuality { get }
     var isClipboardSyncEnabled: Bool { get }
     var displays: [RemoteDisplay] { get }

@@ -98,6 +98,7 @@ struct SessionView<Session: RemoteSessionControlling>: View {
         .onChange(of: showsInputBar) { _, _ in
             logDisplayControlState(reason: "inputBarVisibilityChanged")
             if !showsInputBar {
+                inputFocused = false
                 releaseHeldModifierKeys()
             }
         }
@@ -137,7 +138,8 @@ struct SessionView<Session: RemoteSessionControlling>: View {
             RemoteDesktopView(session: session,
                               selectedFramebufferFrame: session.selectedDisplayFrame,
                               zoomScale: $streamZoomScale,
-                              followsCursor: followsCursorWhenZoomed)
+                              followsCursor: followsCursorWhenZoomed,
+                              acceptsHardwareKeyboardInput: acceptsRemoteHardwareKeyboardInput)
                 .id(session.displaySelection.id)
                 .ignoresSafeArea()
 
@@ -213,6 +215,10 @@ struct SessionView<Session: RemoteSessionControlling>: View {
     private var freeSessionHasExpired: Bool {
         guard let freeSessionEndDate else { return false }
         return freeSessionEndDate <= Date.now
+    }
+
+    private var acceptsRemoteHardwareKeyboardInput: Bool {
+        !showsInputBar && !isSessionPaywallPresented && !isFreeSessionTimerInfoPresented
     }
 
     private func logDisplayControlState(reason: String) {
@@ -316,9 +322,10 @@ struct SessionView<Session: RemoteSessionControlling>: View {
     private func toggleInputBar() {
         showsInputBar.toggle()
 
-        if !showsInputBar {
-            releaseHeldModifierKeys()
-        }
+            if !showsInputBar {
+                inputFocused = false
+                releaseHeldModifierKeys()
+            }
 
         AppLog.ui.info("Software input bar visibility changed; visible=\(self.showsInputBar, privacy: .public)")
         inputFocused = showsInputBar

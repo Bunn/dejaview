@@ -1,8 +1,11 @@
 import CoreGraphics
 
-struct RemoteFramebufferUpdate {
+struct RemoteFramebufferUpdate: @unchecked Sendable {
     let image: CGImage?
+    let imageSize: CGSize
     let dirtyRect: CGRect?
 
-    static let empty = RemoteFramebufferUpdate(image: nil, dirtyRect: nil)
+    static let empty = RemoteFramebufferUpdate(image: nil,
+                                               imageSize: .zero,
+                                               dirtyRect: nil)
 }

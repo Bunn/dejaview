@@ -26,13 +26,10 @@ protocol RemoteSessionInputControlling: AnyObject {
 protocol RemoteSessionControlling: ObservableObject, RemoteSessionInputControlling {
     var status: RemoteSessionStatus { get }
 
-    /// Current framebuffer metadata. Deliberately NOT part of
+    /// Current framebuffer updates. Deliberately NOT part of
     /// `objectWillChange`: frames arrive at display rate, and invalidating
     /// SwiftUI for each one causes constant re-layout (which, among other
-    /// things, makes presented menus flicker). Observe
-    /// `framebufferUpdatePublisher` for rendering.
-    var image: CGImage? { get }
-    var imagePublisher: AnyPublisher<CGImage?, Never> { get }
+    /// things, makes presented menus flicker).
     var framebufferUpdatePublisher: AnyPublisher<RemoteFramebufferUpdate, Never> { get }
     var cursor: RemoteCursor? { get }
     var cursorPublisher: AnyPublisher<RemoteCursor?, Never> { get }

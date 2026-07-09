@@ -1,6 +1,10 @@
 import Combine
+import OSLog
 import SwiftUI
 import UIKit
+
+private let remoteFramebufferRenderingSignposter = OSSignposter(logger: AppLog.pointsOfInterest)
+private let remoteFramebufferRenderInterval: TimeInterval = 1.0 / 15.0
 
 /// Renders the remote framebuffer into a dirty-rect aware view and maps touches
 /// to VNC pointer events.
@@ -25,10 +29,12 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
     var selectedFramebufferFrame: CGRect?
     @Binding var zoomScale: CGFloat
     var followsCursor: Bool
+    var acceptsHardwareKeyboardInput: Bool
 
     func makeUIView(context: Context) -> ScreenView {
         let view = ScreenView()
         view.session = session
+        view.setAcceptsHardwareKeyboardInput(acceptsHardwareKeyboardInput)
         view.onZoomScaleChanged = context.coordinator.setZoomScale(_:)
         view.setVisibleFramebufferFrame(selectedFramebufferFrame)
 
@@ -54,6 +60,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         uiView.setVisibleFramebufferFrame(selectedFramebufferFrame)
         uiView.setZoomScale(zoomScale, notify: false)
         uiView.setFollowsCursor(followsCursor)
+        uiView.setAcceptsHardwareKeyboardInput(acceptsHardwareKeyboardInput)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -85,6 +92,11 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         private let cursorLayer = CALayer()
         private var remoteCursor: RemoteCursor?
         private weak var pointerScrollPan: UIPanGestureRecognizer?
+        private var pendingFramebufferUpdate: RemoteFramebufferUpdate?
+        private var framebufferFlushTask: Task<Void, Never>?
+        private var lastFramebufferFlushTime: TimeInterval = 0
+        private var keyboardFocusTask: Task<Void, Never>?
+        private var acceptsHardwareKeyboardInput = true
 
         private var zoomScale: CGFloat = 1
         private var followsCursor = true
@@ -117,7 +129,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         private let maximumZoomScale: CGFloat = 4
 
         private final class FramebufferImageView: UIView {
-            private var image: UIImage?
+            private var image: CGImage?
             private var fullImageSize: CGSize = .zero
             private var visibleFramebufferFrame: CGRect = .zero
 
@@ -139,7 +151,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
             func setFramebuffer(image: CGImage?,
                                 imageSize: CGSize,
                                 visibleFrame: CGRect) {
-                self.image = image.map(UIImage.init(cgImage:))
+                self.image = image
                 setFramebuffer(imageSize: imageSize,
                                visibleFrame: visibleFrame)
             }
@@ -163,14 +175,33 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
                 guard let context = UIGraphicsGetCurrentContext() else { return }
 
+                let signpostID = remoteFramebufferRenderingSignposter.makeSignpostID()
+                let state = remoteFramebufferRenderingSignposter.beginInterval("Remote framebuffer draw", id: signpostID)
+                defer {
+                    remoteFramebufferRenderingSignposter.endInterval("Remote framebuffer draw", state)
+                }
+
                 let scale = bounds.width / visibleFramebufferFrame.width
                 let drawRect = CGRect(x: -visibleFramebufferFrame.minX * scale,
                                       y: -visibleFramebufferFrame.minY * scale,
                                       width: fullImageSize.width * scale,
                                       height: fullImageSize.height * scale)
 
+                context.saveGState()
+                context.clip(to: rect)
+                defer {
+                    context.restoreGState()
+                }
+
                 context.interpolationQuality = .default
-                image.draw(in: drawRect)
+
+                context.translateBy(x: 0, y: bounds.height)
+                context.scaleBy(x: 1, y: -1)
+                context.draw(image,
+                             in: CGRect(x: drawRect.minX,
+                                        y: bounds.height - drawRect.maxY,
+                                        width: drawRect.width,
+                                        height: drawRect.height))
             }
         }
 
@@ -190,8 +221,46 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         /// endless keyboard-geometry conversions between the two windows
         /// ("Invalid UIScreen coordinate space conversion" log spam).
         private func becomeFirstResponderIfAppropriate() {
-            guard let window, window.isKeyWindow, !isFirstResponder else { return }
+            guard acceptsHardwareKeyboardInput,
+                  let window,
+                  window.isKeyWindow,
+                  !isFirstResponder else {
+                return
+            }
             becomeFirstResponder()
+        }
+
+        func setAcceptsHardwareKeyboardInput(_ accepts: Bool) {
+            guard acceptsHardwareKeyboardInput != accepts else {
+                if accepts { requestKeyboardFocus() }
+                return
+            }
+
+            acceptsHardwareKeyboardInput = accepts
+
+            if accepts {
+                requestKeyboardFocus()
+            } else {
+                keyboardFocusTask?.cancel()
+                keyboardFocusTask = nil
+
+                if isFirstResponder {
+                    resignFirstResponder()
+                }
+            }
+        }
+
+        private func requestKeyboardFocus() {
+            guard acceptsHardwareKeyboardInput, window != nil else { return }
+
+            keyboardFocusTask?.cancel()
+            keyboardFocusTask = Task { @MainActor [weak self] in
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+
+                self?.keyboardFocusTask = nil
+                self?.becomeFirstResponderIfAppropriate()
+            }
         }
 
         override init(frame: CGRect) {
@@ -257,11 +326,11 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
             registerKeyWindowObservers()
 
-            // Unconditional: this only fires when entering the hierarchy
-            // (the window may not be key yet mid-transition), never while
-            // the options menu is presented.
             if window != nil {
-                becomeFirstResponder()
+                requestKeyboardFocus()
+            } else {
+                keyboardFocusTask?.cancel()
+                keyboardFocusTask = nil
             }
         }
 
@@ -273,7 +342,19 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         // "Invalid UIScreen coordinate space conversion". Let go of keyboard
         // focus while we're not the key window and re-grab it afterwards.
 
-        private var keyWindowObservers: [NSObjectProtocol] = []
+        private final class NotificationObserver: @unchecked Sendable {
+            private let token: NSObjectProtocol
+
+            init(_ token: NSObjectProtocol) {
+                self.token = token
+            }
+
+            deinit {
+                NotificationCenter.default.removeObserver(token)
+            }
+        }
+
+        private var keyWindowObservers: [NotificationObserver] = []
 
         private func registerKeyWindowObservers() {
             unregisterKeyWindowObservers()
@@ -283,36 +364,107 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
             let center = NotificationCenter.default
 
             keyWindowObservers = [
-                center.addObserver(forName: UIWindow.didResignKeyNotification,
-                                   object: window,
-                                   queue: .main) { [weak self] _ in
-                    self?.resignFirstResponder()
-                },
-                center.addObserver(forName: UIWindow.didBecomeKeyNotification,
-                                   object: window,
-                                   queue: .main) { [weak self] _ in
-                    self?.becomeFirstResponder()
-                }
+                NotificationObserver(
+                    center.addObserver(forName: UIWindow.didResignKeyNotification,
+                                       object: window,
+                                       queue: .main) { [weak self] _ in
+                        MainActor.assumeIsolated {
+                            _ = self?.resignFirstResponder()
+                        }
+                    }
+                ),
+                NotificationObserver(
+                    center.addObserver(forName: UIWindow.didBecomeKeyNotification,
+                                       object: window,
+                                       queue: .main) { [weak self] _ in
+                        MainActor.assumeIsolated {
+                            self?.requestKeyboardFocus()
+                        }
+                    }
+                )
             ]
         }
 
         private func unregisterKeyWindowObservers() {
-            keyWindowObservers.forEach(NotificationCenter.default.removeObserver)
-            keyWindowObservers = []
+            keyWindowObservers.removeAll()
         }
 
         deinit {
-            unregisterKeyWindowObservers()
+            framebufferFlushTask?.cancel()
+            keyboardFocusTask?.cancel()
         }
 
         func display(framebufferUpdate update: RemoteFramebufferUpdate) {
+            enqueueFramebufferUpdate(update)
+        }
+
+        private func enqueueFramebufferUpdate(_ update: RemoteFramebufferUpdate) {
+            let imageSizeChanged = update.imageSize != fullImageSize
+            let shouldApplyImmediately = update.image == nil
+                || imageSizeChanged
+                || fullImageSize == .zero
+
+            guard !shouldApplyImmediately else {
+                framebufferFlushTask?.cancel()
+                framebufferFlushTask = nil
+                pendingFramebufferUpdate = nil
+                applyFramebufferUpdate(update)
+                return
+            }
+
+            let coalescedDirtyRect: CGRect?
+            if let pendingFramebufferUpdate {
+                if let pendingDirtyRect = pendingFramebufferUpdate.dirtyRect,
+                   let updateDirtyRect = update.dirtyRect {
+                    coalescedDirtyRect = pendingDirtyRect.union(updateDirtyRect)
+                } else {
+                    coalescedDirtyRect = nil
+                }
+            } else {
+                coalescedDirtyRect = update.dirtyRect
+            }
+
+            pendingFramebufferUpdate = RemoteFramebufferUpdate(image: update.image,
+                                                              imageSize: update.imageSize,
+                                                              dirtyRect: coalescedDirtyRect)
+            scheduleFramebufferFlush()
+        }
+
+        private func scheduleFramebufferFlush() {
+            guard framebufferFlushTask == nil else { return }
+
+            let elapsed = CACurrentMediaTime() - lastFramebufferFlushTime
+            guard elapsed < remoteFramebufferRenderInterval else {
+                flushPendingFramebufferUpdate()
+                return
+            }
+
+            let delay = remoteFramebufferRenderInterval - elapsed
+            let delayMilliseconds = Int64(max(1, (delay * 1000).rounded(.up)))
+
+            framebufferFlushTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(delayMilliseconds))
+                guard !Task.isCancelled else { return }
+
+                self?.framebufferFlushTask = nil
+                self?.flushPendingFramebufferUpdate()
+            }
+        }
+
+        private func flushPendingFramebufferUpdate() {
+            framebufferFlushTask?.cancel()
+            framebufferFlushTask = nil
+
+            guard let update = pendingFramebufferUpdate else { return }
+
+            pendingFramebufferUpdate = nil
+            applyFramebufferUpdate(update)
+        }
+
+        private func applyFramebufferUpdate(_ update: RemoteFramebufferUpdate) {
             let previousImageSize = imageSize
 
-            if let image = update.image {
-                fullImageSize = CGSize(width: image.width, height: image.height)
-            } else {
-                fullImageSize = .zero
-            }
+            fullImageSize = update.image == nil ? .zero : update.imageSize
 
             framebufferView.setFramebuffer(image: update.image,
                                            imageSize: fullImageSize,
@@ -327,6 +479,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
             updateFramebufferViewFrame()
             invalidateFramebuffer(dirtyRect: imageSizeChanged ? nil : update.dirtyRect)
+            lastFramebufferFlushTime = CACurrentMediaTime()
         }
 
         func display(cursor: RemoteCursor?) {
@@ -336,6 +489,8 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         }
 
         func setVisibleFramebufferFrame(_ frame: CGRect?) {
+            flushPendingFramebufferUpdate()
+
             let previousVisibleFrame = visibleFramebufferFrame
             let previousSelectedFrame = selectedFramebufferFrame
             selectedFramebufferFrame = frame

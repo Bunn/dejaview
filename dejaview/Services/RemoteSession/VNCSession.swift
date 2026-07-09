@@ -16,20 +16,19 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     @Published private(set) var displays: [RemoteDisplay] = []
     @Published private(set) var displaySelection: RemoteDisplaySelection = .all
 
-    /// Current framebuffer, published outside `objectWillChange` so that
-    /// per-frame updates don't invalidate SwiftUI (see the protocol note).
-    private let imageSubject = CurrentValueSubject<CGImage?, Never>(nil)
+    /// Current framebuffer updates, published outside `objectWillChange` so
+    /// display-rate updates don't invalidate SwiftUI (see the protocol note).
     private let framebufferUpdateSubject = CurrentValueSubject<RemoteFramebufferUpdate, Never>(.empty)
     private let cursorSubject = CurrentValueSubject<RemoteCursor?, Never>(nil)
-    private var currentImage: CGImage?
-
-    var image: CGImage? {
-        currentImage
-    }
-
-    var imagePublisher: AnyPublisher<CGImage?, Never> {
-        imageSubject.eraseToAnyPublisher()
-    }
+    private var currentFramebufferSize: CGSize = .zero
+    private let framebufferThrottleLock = NSLock()
+    private var pendingFramebuffer: VNCFramebuffer?
+    private var pendingFramebufferImageSize: CGSize = .zero
+    private var pendingFramebufferDirtyRect: CGRect?
+    private var framebufferFlushTask: Task<Void, Never>?
+    private var lastFramebufferPublishTime: TimeInterval = 0
+    private static let renderingSignposter = OSSignposter(logger: AppLog.pointsOfInterest)
+    private static let framebufferPublishInterval: TimeInterval = 1.0 / 15.0
 
     var framebufferUpdatePublisher: AnyPublisher<RemoteFramebufferUpdate, Never> {
         framebufferUpdateSubject.eraseToAnyPublisher()
@@ -116,9 +115,10 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
         AppLog.session.info("Resetting session state")
         reconnectPending = false
         releaseHeldModifiers()
+        cancelPendingFramebufferUpdates()
         connection?.delegate = nil
         connection = nil
-        publishFramebuffer(nil)
+        clearFramebuffer()
         cursor = nil
         displays = []
         displaySelection = .all
@@ -215,7 +215,8 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     }
 
     func moveCursor(to point: CGPoint, dragging: Bool = false) {
-        guard image != nil else { return }
+        guard currentFramebufferSize.width > 0,
+              currentFramebufferSize.height > 0 else { return }
 
         let clamped = clampedCursorPoint(point)
 
@@ -354,25 +355,140 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
         return modifiers.filter { !heldModifierRawValues.contains($0.rawValue) }
     }
 
-    private func publishFramebuffer(_ image: CGImage?, dirtyRect: CGRect? = nil) {
-        currentImage = image
-
-        if dirtyRect == nil {
-            imageSubject.send(image)
+    private func publishFramebuffer(_ image: CGImage?,
+                                    imageSize: CGSize,
+                                    dirtyRect: CGRect? = nil) {
+        currentFramebufferSize = imageSize
+        if image != nil {
+            recordFramebufferPublishTime()
         }
 
         framebufferUpdateSubject.send(RemoteFramebufferUpdate(image: image,
+                                                              imageSize: imageSize,
                                                               dirtyRect: dirtyRect))
+    }
+
+    private func clearFramebuffer() {
+        publishFramebuffer(nil, imageSize: .zero)
+    }
+
+    private static func cgImage(from framebuffer: VNCFramebuffer) -> CGImage? {
+        let signpostID = renderingSignposter.makeSignpostID()
+        let state = renderingSignposter.beginInterval("VNC framebuffer CG image", id: signpostID)
+        defer {
+            renderingSignposter.endInterval("VNC framebuffer CG image", state)
+        }
+
+        return framebuffer.cgImage
+    }
+
+    private func enqueueFramebufferUpdate(framebuffer: VNCFramebuffer,
+                                          imageSize: CGSize,
+                                          dirtyRect: CGRect) {
+        let taskDelay: TimeInterval?
+        let shouldFlushImmediately: Bool
+
+        framebufferThrottleLock.lock()
+
+        pendingFramebuffer = framebuffer
+        pendingFramebufferImageSize = imageSize
+
+        if let pendingFramebufferDirtyRect {
+            self.pendingFramebufferDirtyRect = pendingFramebufferDirtyRect.union(dirtyRect)
+        } else {
+            pendingFramebufferDirtyRect = dirtyRect
+        }
+
+        if framebufferFlushTask == nil {
+            let elapsed = ProcessInfo.processInfo.systemUptime - lastFramebufferPublishTime
+            if elapsed >= Self.framebufferPublishInterval {
+                taskDelay = nil
+                shouldFlushImmediately = true
+            } else {
+                taskDelay = Self.framebufferPublishInterval - elapsed
+                shouldFlushImmediately = false
+            }
+        } else {
+            taskDelay = nil
+            shouldFlushImmediately = false
+        }
+
+        if let taskDelay {
+            let delayMilliseconds = Int64(max(1, (taskDelay * 1000).rounded(.up)))
+            framebufferFlushTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(delayMilliseconds))
+                guard !Task.isCancelled else { return }
+
+                self?.flushPendingFramebufferUpdate()
+            }
+        }
+
+        framebufferThrottleLock.unlock()
+
+        if shouldFlushImmediately {
+            flushPendingFramebufferUpdate()
+        }
+    }
+
+    private func flushPendingFramebufferUpdate() {
+        let framebuffer: VNCFramebuffer?
+        let imageSize: CGSize
+        let dirtyRect: CGRect?
+
+        framebufferThrottleLock.lock()
+
+        framebufferFlushTask?.cancel()
+        framebufferFlushTask = nil
+
+        framebuffer = pendingFramebuffer
+        imageSize = pendingFramebufferImageSize
+        dirtyRect = pendingFramebufferDirtyRect
+
+        pendingFramebuffer = nil
+        pendingFramebufferImageSize = .zero
+        pendingFramebufferDirtyRect = nil
+        lastFramebufferPublishTime = ProcessInfo.processInfo.systemUptime
+
+        framebufferThrottleLock.unlock()
+
+        guard let framebuffer else { return }
+
+        let cgImage = Self.cgImage(from: framebuffer)
+
+        Task { @MainActor [weak self] in
+            self?.publishFramebuffer(cgImage,
+                                     imageSize: imageSize,
+                                     dirtyRect: dirtyRect)
+        }
+    }
+
+    private func cancelPendingFramebufferUpdates() {
+        framebufferThrottleLock.lock()
+
+        framebufferFlushTask?.cancel()
+        framebufferFlushTask = nil
+        pendingFramebuffer = nil
+        pendingFramebufferImageSize = .zero
+        pendingFramebufferDirtyRect = nil
+
+        framebufferThrottleLock.unlock()
+    }
+
+    private func recordFramebufferPublishTime() {
+        framebufferThrottleLock.lock()
+        lastFramebufferPublishTime = ProcessInfo.processInfo.systemUptime
+        framebufferThrottleLock.unlock()
     }
 
     // MARK: - Display selection
 
     private var framebufferFrameForDisplaySelection: CGRect? {
-        if let image {
+        if currentFramebufferSize.width > 0,
+           currentFramebufferSize.height > 0 {
             return CGRect(x: 0,
                           y: 0,
-                          width: image.width,
-                          height: image.height)
+                          width: currentFramebufferSize.width,
+                          height: currentFramebufferSize.height)
         }
 
         if displays.count == 1 {
@@ -510,12 +626,15 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     }
 
     private var selectableCursorBounds: CGRect? {
-        guard let image else { return nil }
+        guard currentFramebufferSize.width > 0,
+              currentFramebufferSize.height > 0 else {
+            return nil
+        }
 
         let framebufferBounds = CGRect(x: 0,
                                        y: 0,
-                                       width: image.width,
-                                       height: image.height)
+                                       width: currentFramebufferSize.width,
+                                       height: currentFramebufferSize.height)
 
         guard let selectedDisplayFrame else { return framebufferBounds }
 
@@ -572,8 +691,9 @@ extension VNCSession: VNCConnectionDelegate {
 
                 self.connection?.delegate = nil
                 self.releaseHeldModifiers()
+                self.cancelPendingFramebufferUpdates()
                 self.connection = nil
-                self.publishFramebuffer(nil)
+                self.clearFramebuffer()
                 self.cursor = nil
 
                 if self.reconnectPending {
@@ -625,7 +745,10 @@ extension VNCSession: VNCConnectionDelegate {
 
     func connection(_ connection: VNCConnection,
                     didCreateFramebuffer framebuffer: VNCFramebuffer) {
-        let cgImage = framebuffer.cgImage
+        cancelPendingFramebufferUpdates()
+
+        let cgImage = Self.cgImage(from: framebuffer)
+        let imageSize = framebuffer.cgSize
         let screens = framebuffer.screens
         let displays = Self.remoteDisplays(from: screens)
         let screenCount = screens.count
@@ -634,25 +757,31 @@ extension VNCSession: VNCConnectionDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
 
-            self.publishFramebuffer(cgImage)
+            self.publishFramebuffer(cgImage, imageSize: imageSize)
             self.updateDisplays(displays)
 
-            if let cgImage {
-                AppLog.session.info("Created framebuffer width=\(cgImage.width, privacy: .public) height=\(cgImage.height, privacy: .public) vncScreenCount=\(screenCount, privacy: .public) vncScreens=\(screenLayout, privacy: .public)")
+            if cgImage != nil {
+                AppLog.session.info("Created framebuffer width=\(imageSize.width, privacy: .public) height=\(imageSize.height, privacy: .public) vncScreenCount=\(screenCount, privacy: .public) vncScreens=\(screenLayout, privacy: .public)")
             } else {
                 AppLog.session.warning("Created framebuffer without a CGImage; vncScreenCount=\(screenCount, privacy: .public) vncScreens=\(screenLayout, privacy: .public)")
             }
 
             // Start the trackpad cursor at the center of the screen.
-            if self.cursorLocation == .zero, let image = self.image {
-                self.cursorLocation = CGPoint(x: image.width / 2, y: image.height / 2)
+            if self.cursorLocation == .zero,
+               imageSize.width > 0,
+               imageSize.height > 0 {
+                self.cursorLocation = CGPoint(x: imageSize.width / 2,
+                                              y: imageSize.height / 2)
             }
         }
     }
 
     func connection(_ connection: VNCConnection,
                     didResizeFramebuffer framebuffer: VNCFramebuffer) {
-        let cgImage = framebuffer.cgImage
+        cancelPendingFramebufferUpdates()
+
+        let cgImage = Self.cgImage(from: framebuffer)
+        let imageSize = framebuffer.cgSize
         let screens = framebuffer.screens
         let displays = Self.remoteDisplays(from: screens)
         let screenCount = screens.count
@@ -661,11 +790,11 @@ extension VNCSession: VNCConnectionDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
 
-            self.publishFramebuffer(cgImage)
+            self.publishFramebuffer(cgImage, imageSize: imageSize)
             self.updateDisplays(displays)
 
-            if let cgImage {
-                AppLog.session.info("Resized framebuffer width=\(cgImage.width, privacy: .public) height=\(cgImage.height, privacy: .public) vncScreenCount=\(screenCount, privacy: .public) vncScreens=\(screenLayout, privacy: .public)")
+            if cgImage != nil {
+                AppLog.session.info("Resized framebuffer width=\(imageSize.width, privacy: .public) height=\(imageSize.height, privacy: .public) vncScreenCount=\(screenCount, privacy: .public) vncScreens=\(screenLayout, privacy: .public)")
             } else {
                 AppLog.session.warning("Resized framebuffer without a CGImage; vncScreenCount=\(screenCount, privacy: .public) vncScreens=\(screenLayout, privacy: .public)")
             }
@@ -676,15 +805,15 @@ extension VNCSession: VNCConnectionDelegate {
                     didUpdateFramebuffer framebuffer: VNCFramebuffer,
                     x: UInt16, y: UInt16,
                     width: UInt16, height: UInt16) {
-        let cgImage = framebuffer.cgImage
+        let imageSize = framebuffer.cgSize
         let dirtyRect = CGRect(x: CGFloat(x),
                                y: CGFloat(y),
                                width: CGFloat(width),
                                height: CGFloat(height))
 
-        Task { @MainActor [weak self] in
-            self?.publishFramebuffer(cgImage, dirtyRect: dirtyRect)
-        }
+        enqueueFramebufferUpdate(framebuffer: framebuffer,
+                                 imageSize: imageSize,
+                                 dirtyRect: dirtyRect)
     }
 
     func connection(_ connection: VNCConnection,

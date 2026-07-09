@@ -25,6 +25,15 @@ struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
             Toggle("Clipboard Sync", systemImage: "doc.on.clipboard",
                    isOn: clipboardBinding)
 
+            Picker("Frame Rate", selection: frameRateBinding) {
+                ForEach(RemoteFrameRate.allCases) { frameRate in
+                    Label("\(frameRate.title) (\(frameRate.rawValue) FPS)",
+                          systemImage: frameRate.systemImage)
+                        .tag(frameRate)
+                }
+            }
+            .pickerStyle(.inline)
+
 #if DEBUG
             Section("Debug") {
                 Button("Test Automatic Reconnect",
@@ -43,7 +52,7 @@ struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
         .foregroundStyle(.white)
         .padding(5)
         .liquidGlass(in: Circle())
-        .accessibilityHint("Shows quality, trackpad, and clipboard options.")
+        .accessibilityHint("Shows quality, frame rate, trackpad, and clipboard options.")
     }
 
     private var qualityBinding: Binding<RemoteSessionQuality> {
@@ -74,6 +83,14 @@ struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
             if session.isClipboardSyncEnabled != isOn {
                 session.toggleClipboardSync()
             }
+        }
+    }
+
+    private var frameRateBinding: Binding<RemoteFrameRate> {
+        Binding {
+            session.preferredFrameRate
+        } set: { frameRate in
+            session.setPreferredFrameRate(frameRate)
         }
     }
 }

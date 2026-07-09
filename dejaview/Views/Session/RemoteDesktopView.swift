@@ -4,7 +4,6 @@ import SwiftUI
 import UIKit
 
 private let remoteFramebufferRenderingSignposter = OSSignposter(logger: AppLog.pointsOfInterest)
-private let remoteFramebufferRenderInterval: TimeInterval = 1.0 / 15.0
 
 /// Renders the remote framebuffer into a dirty-rect aware view and maps touches
 /// to VNC pointer events.
@@ -37,6 +36,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         view.setAcceptsHardwareKeyboardInput(acceptsHardwareKeyboardInput)
         view.onZoomScaleChanged = context.coordinator.setZoomScale(_:)
         view.setVisibleFramebufferFrame(selectedFramebufferFrame)
+        view.setPreferredFrameRate(session.preferredFrameRate)
 
         // Frames bypass SwiftUI entirely: publisher -> UIKit drawing.
         // CurrentValueSubject replays the latest frame on subscription.
@@ -60,6 +60,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         uiView.setVisibleFramebufferFrame(selectedFramebufferFrame)
         uiView.setZoomScale(zoomScale, notify: false)
         uiView.setFollowsCursor(followsCursor)
+        uiView.setPreferredFrameRate(session.preferredFrameRate)
         uiView.setAcceptsHardwareKeyboardInput(acceptsHardwareKeyboardInput)
     }
 
@@ -95,6 +96,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         private var pendingFramebufferUpdate: RemoteFramebufferUpdate?
         private var framebufferFlushTask: Task<Void, Never>?
         private var lastFramebufferFlushTime: TimeInterval = 0
+        private var framebufferRenderInterval = RemoteFrameRate.balanced.updateInterval
         private var keyboardFocusTask: Task<Void, Never>?
         private var acceptsHardwareKeyboardInput = true
 
@@ -434,12 +436,12 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
             guard framebufferFlushTask == nil else { return }
 
             let elapsed = CACurrentMediaTime() - lastFramebufferFlushTime
-            guard elapsed < remoteFramebufferRenderInterval else {
+            guard elapsed < framebufferRenderInterval else {
                 flushPendingFramebufferUpdate()
                 return
             }
 
-            let delay = remoteFramebufferRenderInterval - elapsed
+            let delay = framebufferRenderInterval - elapsed
             let delayMilliseconds = Int64(max(1, (delay * 1000).rounded(.up)))
 
             framebufferFlushTask = Task { @MainActor [weak self] in
@@ -526,6 +528,19 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
             if changed {
                 followCursorIfNeeded()
+            }
+        }
+
+        func setPreferredFrameRate(_ frameRate: RemoteFrameRate) {
+            let newInterval = frameRate.updateInterval
+            guard newInterval != framebufferRenderInterval else { return }
+
+            framebufferRenderInterval = newInterval
+
+            if pendingFramebufferUpdate != nil {
+                framebufferFlushTask?.cancel()
+                framebufferFlushTask = nil
+                scheduleFramebufferFlush()
             }
         }
 

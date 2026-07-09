@@ -4,6 +4,7 @@ import OSLog
 /// Full-screen remote session with floating Liquid Glass controls.
 struct SessionView<Session: RemoteSessionControlling>: View {
     @ObservedObject var session: Session
+    @Binding private var preferences: SessionPreferences
     @Environment(SubscriptionStore.self) private var subscriptionStore
     @Environment(\.dismiss) private var dismiss
 
@@ -22,6 +23,15 @@ struct SessionView<Session: RemoteSessionControlling>: View {
     @FocusState private var inputFocused: Bool
 
     private let freeSessionDurationInterval: TimeInterval = 120
+
+    init(session: Session, preferences: Binding<SessionPreferences>) {
+        self.session = session
+        _preferences = preferences
+
+        let preferences = preferences.wrappedValue.normalized
+        _streamZoomScale = State(initialValue: CGFloat(preferences.zoomScale))
+        _followsCursorWhenZoomed = State(initialValue: preferences.followsCursor)
+    }
 
     var body: some View {
         ZStack {
@@ -100,8 +110,24 @@ struct SessionView<Session: RemoteSessionControlling>: View {
         .onChange(of: session.displays) { _, _ in
             logDisplayControlState(reason: "displayLayoutChanged")
         }
-        .onChange(of: session.displaySelection) { _, _ in
+        .onChange(of: session.displaySelection) { _, selection in
             logDisplayControlState(reason: "displaySelectionChanged")
+            updatePreference(\.displaySelection, to: selection)
+        }
+        .onChange(of: session.touchMode) { _, touchMode in
+            updatePreference(\.touchMode, to: touchMode)
+        }
+        .onChange(of: session.isClipboardSyncEnabled) { _, isEnabled in
+            updatePreference(\.isClipboardSyncEnabled, to: isEnabled)
+        }
+        .onChange(of: session.preferredFrameRate) { _, frameRate in
+            updatePreference(\.frameRate, to: frameRate)
+        }
+        .onChange(of: streamZoomScale) { _, zoomScale in
+            updatePreference(\.zoomScale, to: Double(zoomScale))
+        }
+        .onChange(of: followsCursorWhenZoomed) { _, followsCursor in
+            updatePreference(\.followsCursor, to: followsCursor)
         }
         .onChange(of: showsInputBar) { _, _ in
             logDisplayControlState(reason: "inputBarVisibilityChanged")
@@ -261,6 +287,17 @@ struct SessionView<Session: RemoteSessionControlling>: View {
             : session.displays.map(\.logDescription).joined(separator: "; ")
 
         AppLog.ui.info("Session display controls state; reason=\(reason, privacy: .public) status=\(self.session.status.logDescription, privacy: .public) displayCount=\(displayCount, privacy: .public) selection=\(self.session.displaySelection.logDescription, privacy: .public) bottomControlsVisible=\(bottomControlsVisible, privacy: .public) displayControlVisible=\(displayControlVisible, privacy: .public) displayOptionCount=\(displayOptionCount, privacy: .public) displayOptions=\(optionDescription, privacy: .public) inputBarVisible=\(self.showsInputBar, privacy: .public) layout=\(layoutDescription, privacy: .public)")
+    }
+
+    private func updatePreference<Value: Equatable>(
+        _ keyPath: WritableKeyPath<SessionPreferences, Value>,
+        to value: Value
+    ) {
+        guard preferences[keyPath: keyPath] != value else { return }
+
+        var updatedPreferences = preferences
+        updatedPreferences[keyPath: keyPath] = value
+        preferences = updatedPreferences.normalized
     }
 
     private func enforceFreeSessionLimitIfNeeded() async {

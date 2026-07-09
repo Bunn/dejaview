@@ -18,12 +18,15 @@ protocol SavedMachineRepository {
     func password(for id: UUID) -> String?
     func setPassword(_ password: String, for id: UUID)
     func deletePassword(for id: UUID)
+    func sessionPreferences(for id: UUID) -> SessionPreferences
+    func setSessionPreferences(_ preferences: SessionPreferences, for id: UUID)
 }
 
 struct UserDefaultsSavedMachineRepository: SavedMachineRepository {
     static let shared = UserDefaultsSavedMachineRepository()
 
     private let defaultsKey = "savedMachines"
+    private let sessionPreferencesKeyPrefix = "savedMachineSessionPreferences."
 
     func loadMachines() -> [SavedMachine] {
         guard let data = UserDefaults.standard.data(forKey: defaultsKey) else {
@@ -64,6 +67,7 @@ struct UserDefaultsSavedMachineRepository: SavedMachineRepository {
         var machines = loadMachines()
         machines.removeAll { $0.id == id }
         saveMachines(machines)
+        UserDefaults.standard.removeObject(forKey: sessionPreferencesKey(for: id))
     }
 
     func loadRecentConnections(limit: Int) -> [ConnectionHistoryEntry] {
@@ -102,6 +106,32 @@ struct UserDefaultsSavedMachineRepository: SavedMachineRepository {
 
     func deletePassword(for id: UUID) {
         KeychainPasswordStore.deletePassword(for: id)
+    }
+
+    func sessionPreferences(for id: UUID) -> SessionPreferences {
+        guard let data = UserDefaults.standard.data(forKey: sessionPreferencesKey(for: id)) else {
+            return .default
+        }
+
+        do {
+            return try JSONDecoder().decode(SessionPreferences.self, from: data).normalized
+        } catch {
+            AppLog.storage.error("Failed to decode legacy session preferences id=\(id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return .default
+        }
+    }
+
+    func setSessionPreferences(_ preferences: SessionPreferences, for id: UUID) {
+        do {
+            let data = try JSONEncoder().encode(preferences.normalized)
+            UserDefaults.standard.set(data, forKey: sessionPreferencesKey(for: id))
+        } catch {
+            AppLog.storage.error("Failed to encode legacy session preferences id=\(id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func sessionPreferencesKey(for id: UUID) -> String {
+        sessionPreferencesKeyPrefix + id.uuidString
     }
 }
 private enum KeychainPasswordStore {

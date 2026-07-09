@@ -1,0 +1,52 @@
+import Foundation
+
+struct SessionPreferences: Codable, Equatable, Sendable {
+    var touchMode: RemoteTouchMode = .direct
+    var isClipboardSyncEnabled = false
+    var displaySelection: RemoteDisplaySelection = .all
+    var zoomScale = 1.0
+    var followsCursor = true
+    var frameRate: RemoteFrameRate = .balanced
+
+    static let `default` = SessionPreferences()
+
+    var normalized: SessionPreferences {
+        var preferences = self
+        preferences.zoomScale = min(max(zoomScale, 1), 4)
+        return preferences
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case touchMode
+        case isClipboardSyncEnabled
+        case displaySelection
+        case zoomScale
+        case followsCursor
+        case frameRate
+    }
+
+    init(touchMode: RemoteTouchMode = .direct,
+         isClipboardSyncEnabled: Bool = false,
+         displaySelection: RemoteDisplaySelection = .all,
+         zoomScale: Double = 1,
+         followsCursor: Bool = true,
+         frameRate: RemoteFrameRate = .balanced) {
+        self.touchMode = touchMode
+        self.isClipboardSyncEnabled = isClipboardSyncEnabled
+        self.displaySelection = displaySelection
+        self.zoomScale = zoomScale
+        self.followsCursor = followsCursor
+        self.frameRate = frameRate
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        touchMode = try container.decodeIfPresent(RemoteTouchMode.self, forKey: .touchMode) ?? .direct
+        isClipboardSyncEnabled = try container.decodeIfPresent(Bool.self, forKey: .isClipboardSyncEnabled) ?? false
+        displaySelection = try container.decodeIfPresent(RemoteDisplaySelection.self, forKey: .displaySelection) ?? .all
+        zoomScale = try container.decodeIfPresent(Double.self, forKey: .zoomScale) ?? 1
+        followsCursor = try container.decodeIfPresent(Bool.self, forKey: .followsCursor) ?? true
+        frameRate = try container.decodeIfPresent(RemoteFrameRate.self, forKey: .frameRate) ?? .balanced
+        self = normalized
+    }
+}

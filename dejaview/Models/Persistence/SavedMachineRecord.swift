@@ -12,6 +12,7 @@ final class SavedMachineRecord {
     var createdAt: Date = Date.now
     var updatedAt: Date = Date.now
     var lastConnectedAt: Date?
+    var sessionPreferencesData: Data?
     var sortOrder: Int = 0
 
     init(id: UUID = UUID(),
@@ -23,6 +24,7 @@ final class SavedMachineRecord {
          createdAt: Date = .now,
          updatedAt: Date = .now,
          lastConnectedAt: Date? = nil,
+         sessionPreferencesData: Data? = nil,
          sortOrder: Int = 0) {
         self.id = id
         self.name = name
@@ -33,6 +35,7 @@ final class SavedMachineRecord {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.lastConnectedAt = lastConnectedAt
+        self.sessionPreferencesData = sessionPreferencesData
         self.sortOrder = sortOrder
     }
 

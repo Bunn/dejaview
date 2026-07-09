@@ -12,6 +12,8 @@ protocol MachineStoring: AnyObject {
     func contains(_ machine: SavedMachine) -> Bool
     func machine(withID id: UUID) -> SavedMachine?
     func password(for machine: SavedMachine) -> String
+    func sessionPreferences(for machine: SavedMachine) -> SessionPreferences
+    func setSessionPreferences(_ preferences: SessionPreferences, for machine: SavedMachine)
     func startSession(to machine: SavedMachine, connectedAt: Date) -> UUID
     func finishSession(withID id: UUID,
                        endedAt: Date,

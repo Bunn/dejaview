@@ -227,6 +227,47 @@ final class SwiftDataSavedMachineRepository: SavedMachineRepository, @unchecked 
         legacyRepository.deletePassword(for: id)
     }
 
+    func sessionPreferences(for id: UUID) -> SessionPreferences {
+        performLegacyMigrationIfNeeded()
+
+        let context = ModelContext(modelContainer)
+
+        guard let record = machineRecord(withID: id, in: context) else {
+            AppLog.storage.warning("Session preferences requested for missing SwiftData machine id=\(id.uuidString, privacy: .public)")
+            return legacyRepository.sessionPreferences(for: id)
+        }
+
+        guard let data = record.sessionPreferencesData else {
+            return .default
+        }
+
+        do {
+            return try JSONDecoder().decode(SessionPreferences.self, from: data).normalized
+        } catch {
+            AppLog.storage.error("Failed to decode SwiftData session preferences id=\(id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return .default
+        }
+    }
+
+    func setSessionPreferences(_ preferences: SessionPreferences, for id: UUID) {
+        performLegacyMigrationIfNeeded()
+
+        let context = ModelContext(modelContainer)
+
+        guard let record = machineRecord(withID: id, in: context) else {
+            AppLog.storage.warning("Attempted to save session preferences for missing SwiftData machine id=\(id.uuidString, privacy: .public)")
+            return
+        }
+
+        do {
+            record.sessionPreferencesData = try JSONEncoder().encode(preferences.normalized)
+            record.updatedAt = .now
+            save(context, operation: "setSessionPreferences")
+        } catch {
+            AppLog.storage.error("Failed to encode SwiftData session preferences id=\(id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     private func performLegacyMigrationIfNeeded() {
         migrationLock.lock()
         defer { migrationLock.unlock() }

@@ -11,6 +11,7 @@ import RoyalVNCKit
 final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @unchecked Sendable {
     @Published var status: RemoteSessionStatus = .idle
     @Published private(set) var quality: RemoteSessionQuality = .best
+    @Published private(set) var preferredFrameRate: RemoteFrameRate = .balanced
     @Published private(set) var isClipboardSyncEnabled = false
     @Published private(set) var touchMode: RemoteTouchMode = .direct
     @Published private(set) var displays: [RemoteDisplay] = []
@@ -27,8 +28,8 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     private var pendingFramebufferDirtyRect: CGRect?
     private var framebufferFlushTask: Task<Void, Never>?
     private var lastFramebufferPublishTime: TimeInterval = 0
+    private var framebufferPublishInterval = RemoteFrameRate.balanced.updateInterval
     private static let renderingSignposter = OSSignposter(logger: AppLog.pointsOfInterest)
-    private static let framebufferPublishInterval: TimeInterval = 1.0 / 15.0
 
     var framebufferUpdatePublisher: AnyPublisher<RemoteFramebufferUpdate, Never> {
         framebufferUpdateSubject.eraseToAnyPublisher()
@@ -99,7 +100,7 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     }
 
     private func startConnection(preservingStatus: Bool = false) {
-        AppLog.session.info("Connecting to VNC host \(self.host, privacy: .public):\(self.port, privacy: .public); usernameProvided=\(!self.username.isEmpty, privacy: .public); quality=\(self.quality.rawValue, privacy: .public); clipboard=\(self.isClipboardSyncEnabled, privacy: .public); automaticReconnectAttempt=\(self.automaticReconnectAttempt, privacy: .public)")
+        AppLog.session.info("Connecting to VNC host \(self.host, privacy: .public):\(self.port, privacy: .public); usernameProvided=\(!self.username.isEmpty, privacy: .public); quality=\(self.quality.rawValue, privacy: .public); clipboard=\(self.isClipboardSyncEnabled, privacy: .public); frameRate=\(self.preferredFrameRate.rawValue, privacy: .public); automaticReconnectAttempt=\(self.automaticReconnectAttempt, privacy: .public)")
 
         let settings = VNCConnection.Settings(
             isDebugLoggingEnabled: false,
@@ -165,12 +166,41 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     // `VNCConnection.Settings` is immutable, so changing quality or clipboard
     // sync mid-session briefly reconnects with the new settings.
 
+    func applyPreferences(_ preferences: SessionPreferences) {
+        let preferences = preferences.normalized
+        let clipboardChanged = isClipboardSyncEnabled != preferences.isClipboardSyncEnabled
+
+        touchMode = preferences.touchMode
+        isClipboardSyncEnabled = preferences.isClipboardSyncEnabled
+        displaySelection = displays.isEmpty
+            ? preferences.displaySelection
+            : normalizedDisplaySelection(preferences.displaySelection)
+        setPreferredFrameRate(preferences.frameRate)
+
+        AppLog.session.info("Applied session preferences; touchMode=\(preferences.touchMode.rawValue, privacy: .public) clipboard=\(preferences.isClipboardSyncEnabled, privacy: .public) display=\(self.displaySelection.logDescription, privacy: .public) frameRate=\(preferences.frameRate.rawValue, privacy: .public)")
+
+        if clipboardChanged, status == .connected {
+            applySettingsChange()
+        }
+    }
+
     func setQuality(_ newQuality: RemoteSessionQuality) {
         guard newQuality != quality else { return }
 
         AppLog.session.info("Changing quality from \(self.quality.rawValue, privacy: .public) to \(newQuality.rawValue, privacy: .public)")
         quality = newQuality
         applySettingsChange()
+    }
+
+    func setPreferredFrameRate(_ frameRate: RemoteFrameRate) {
+        guard frameRate != preferredFrameRate else { return }
+
+        framebufferThrottleLock.lock()
+        framebufferPublishInterval = frameRate.updateInterval
+        framebufferThrottleLock.unlock()
+
+        preferredFrameRate = frameRate
+        AppLog.rendering.info("Remote frame rate preference changed; framesPerSecond=\(frameRate.rawValue, privacy: .public)")
     }
 
     func setDisplaySelection(_ selection: RemoteDisplaySelection) {
@@ -632,11 +662,11 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
 
         if framebufferFlushTask == nil {
             let elapsed = ProcessInfo.processInfo.systemUptime - lastFramebufferPublishTime
-            if elapsed >= Self.framebufferPublishInterval {
+            if elapsed >= framebufferPublishInterval {
                 taskDelay = nil
                 shouldFlushImmediately = true
             } else {
-                taskDelay = Self.framebufferPublishInterval - elapsed
+                taskDelay = framebufferPublishInterval - elapsed
                 shouldFlushImmediately = false
             }
         } else {

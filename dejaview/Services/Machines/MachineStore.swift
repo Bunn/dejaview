@@ -72,6 +72,18 @@ final class MachineStore: MachineStoring {
         return password
     }
 
+    func sessionPreferences(for machine: SavedMachine) -> SessionPreferences {
+        let preferences = repository.sessionPreferences(for: machine.id)
+        AppLog.storage.info("Loaded session preferences for '\(machine.displayName, privacy: .public)'; touchMode=\(preferences.touchMode.rawValue, privacy: .public) clipboard=\(preferences.isClipboardSyncEnabled, privacy: .public) display=\(preferences.displaySelection.logDescription, privacy: .public) zoom=\(preferences.zoomScale, privacy: .public) followsCursor=\(preferences.followsCursor, privacy: .public) frameRate=\(preferences.frameRate.rawValue, privacy: .public)")
+        return preferences
+    }
+
+    func setSessionPreferences(_ preferences: SessionPreferences, for machine: SavedMachine) {
+        let preferences = preferences.normalized
+        AppLog.storage.info("Saving session preferences for '\(machine.displayName, privacy: .public)'; touchMode=\(preferences.touchMode.rawValue, privacy: .public) clipboard=\(preferences.isClipboardSyncEnabled, privacy: .public) display=\(preferences.displaySelection.logDescription, privacy: .public) zoom=\(preferences.zoomScale, privacy: .public) followsCursor=\(preferences.followsCursor, privacy: .public) frameRate=\(preferences.frameRate.rawValue, privacy: .public)")
+        repository.setSessionPreferences(preferences, for: machine.id)
+    }
+
     func startSession(to machine: SavedMachine, connectedAt: Date) -> UUID {
         let id = UUID()
         AppLog.storage.info("Recording successful session start for '\(machine.displayName, privacy: .public)'; id=\(id.uuidString, privacy: .public)")

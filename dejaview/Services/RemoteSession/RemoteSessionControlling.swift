@@ -34,6 +34,7 @@ protocol RemoteSessionControlling: ObservableObject, RemoteSessionInputControlli
     var cursor: RemoteCursor? { get }
     var cursorPublisher: AnyPublisher<RemoteCursor?, Never> { get }
     var quality: RemoteSessionQuality { get }
+    var preferredFrameRate: RemoteFrameRate { get }
     var isClipboardSyncEnabled: Bool { get }
     var displays: [RemoteDisplay] { get }
     var displayOptions: [RemoteDisplayOption] { get }
@@ -43,7 +44,9 @@ protocol RemoteSessionControlling: ObservableObject, RemoteSessionInputControlli
     func connect(host: String, port: UInt16, username: String, password: String)
     func disconnect()
     func reset()
+    func applyPreferences(_ preferences: SessionPreferences)
     func setQuality(_ newQuality: RemoteSessionQuality)
+    func setPreferredFrameRate(_ frameRate: RemoteFrameRate)
     func setDisplaySelection(_ selection: RemoteDisplaySelection)
     func toggleClipboardSync()
     func toggleTouchMode()

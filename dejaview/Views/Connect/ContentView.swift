@@ -29,6 +29,7 @@ struct ContentView<Session: RemoteSessionControlling,
     @State private var isDeleteConfirmationPresented = false
     @State private var isClearRecentConnectionsConfirmationPresented = false
     @State private var sessionMachine: SavedMachine?
+    @State private var sessionPreferences = SessionPreferences.default
     @State private var sessionHistoryContext: SessionHistoryContext?
     @State private var machineReachabilityStatuses: [UUID: MachineReachabilityStatus] = [:]
     @State private var machineReachabilityEndpoints: [UUID: String] = [:]
@@ -56,7 +57,7 @@ struct ContentView<Session: RemoteSessionControlling,
         }
         .navigationSplitViewStyle(.balanced)
         .fullScreenCover(isPresented: $isSessionPresented, onDismiss: handleSessionDismissed) {
-            SessionView(session: session)
+            SessionView(session: session, preferences: $sessionPreferences)
         }
         .fullScreenCover(isPresented: $isOnboardingPresented) {
             NavigationStack {
@@ -636,9 +637,19 @@ struct ContentView<Session: RemoteSessionControlling,
     }
 
     private func handleSessionDismissed() {
+        persistSessionPreferences()
         finishSessionHistory(outcome: .completed)
         sessionMachine = nil
         session.reset()
+    }
+
+    private func persistSessionPreferences() {
+        guard let sessionMachine,
+              store.contains(sessionMachine) else {
+            return
+        }
+
+        store.setSessionPreferences(sessionPreferences, for: sessionMachine)
     }
 
     private func finishSessionHistory(outcome: ConnectionHistoryOutcome) {
@@ -685,8 +696,14 @@ struct ContentView<Session: RemoteSessionControlling,
 
     private func connect(to machine: SavedMachine, password: String) {
         AppLog.ui.info("Presenting session for \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
+        let preferences = store.contains(machine)
+            ? store.sessionPreferences(for: machine)
+            : SessionPreferences.default
+
         sessionMachine = machine
+        sessionPreferences = preferences
         sessionHistoryContext = nil
+        session.applyPreferences(preferences)
         session.connect(host: machine.host,
                         port: machine.port,
                         username: machine.username,

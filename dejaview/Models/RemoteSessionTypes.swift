@@ -44,7 +44,7 @@ enum RemoteSessionQuality: String, CaseIterable, Identifiable {
 }
 
 /// How touches map to the remote pointer.
-enum RemoteTouchMode {
+enum RemoteTouchMode: String, Codable, Equatable, Sendable {
     /// The cursor jumps to wherever you touch.
     case direct
     /// Dragging moves the cursor from where it is, like a trackpad.
@@ -80,7 +80,7 @@ struct RemoteDisplay: Identifiable, Equatable, Sendable {
     }
 }
 
-enum RemoteDisplaySelection: Hashable, Sendable {
+enum RemoteDisplaySelection: Hashable, Codable, Sendable {
     case all
     case display(UInt32)
     case region(RemoteDisplayRegion)
@@ -108,7 +108,7 @@ enum RemoteDisplaySelection: Hashable, Sendable {
     }
 }
 
-enum RemoteDisplayRegion: String, CaseIterable, Sendable {
+enum RemoteDisplayRegion: String, CaseIterable, Codable, Sendable {
     case left
     case right
     case top

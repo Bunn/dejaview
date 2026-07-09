@@ -7,7 +7,14 @@ protocol SavedMachineRepository {
     func updateMachine(_ machine: SavedMachine)
     func deleteMachine(withID id: UUID)
     func loadRecentConnections(limit: Int) -> [ConnectionHistoryEntry]
-    func recordConnection(to machine: SavedMachine, at date: Date)
+    func startSession(withID id: UUID,
+                      to machine: SavedMachine,
+                      connectedAt: Date)
+    func finishSession(withID id: UUID,
+                       endedAt: Date,
+                       outcome: ConnectionHistoryOutcome)
+    func deleteRecentConnection(withID id: UUID)
+    func clearRecentConnections()
     func password(for id: UUID) -> String?
     func setPassword(_ password: String, for id: UUID)
     func deletePassword(for id: UUID)
@@ -63,7 +70,17 @@ struct UserDefaultsSavedMachineRepository: SavedMachineRepository {
         []
     }
 
-    func recordConnection(to machine: SavedMachine, at date: Date) {}
+    func startSession(withID id: UUID,
+                      to machine: SavedMachine,
+                      connectedAt: Date) {}
+
+    func finishSession(withID id: UUID,
+                       endedAt: Date,
+                       outcome: ConnectionHistoryOutcome) {}
+
+    func deleteRecentConnection(withID id: UUID) {}
+
+    func clearRecentConnections() {}
 
     private func saveMachines(_ machines: [SavedMachine]) {
         do {

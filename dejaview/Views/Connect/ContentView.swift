@@ -27,6 +27,9 @@ struct ContentView<Session: RemoteSessionControlling,
     @State private var pendingConnectionPassword = ""
     @State private var pendingDeletionMachine: SavedMachine?
     @State private var isDeleteConfirmationPresented = false
+    @State private var isClearRecentConnectionsConfirmationPresented = false
+    @State private var sessionMachine: SavedMachine?
+    @State private var sessionHistoryContext: SessionHistoryContext?
     @State private var machineReachabilityStatuses: [UUID: MachineReachabilityStatus] = [:]
     @State private var machineReachabilityEndpoints: [UUID: String] = [:]
     @State private var reachabilityProbeGeneration = 0
@@ -46,12 +49,13 @@ struct ContentView<Session: RemoteSessionControlling,
         NavigationSplitView {
             ConnectSidebarView(selection: $selectedSection,
                                hostCount: store.machines.count + resolvedServices.count,
+                               recentCount: store.recentConnections.count,
                                nearbyCount: resolvedServices.count)
         } detail: {
             detailRoot
         }
         .navigationSplitViewStyle(.balanced)
-        .fullScreenCover(isPresented: $isSessionPresented, onDismiss: session.reset) {
+        .fullScreenCover(isPresented: $isSessionPresented, onDismiss: handleSessionDismissed) {
             SessionView(session: session)
         }
         .fullScreenCover(isPresented: $isOnboardingPresented) {
@@ -109,6 +113,12 @@ struct ContentView<Session: RemoteSessionControlling,
             guard let request else { return }
             handleIntentRequest(request)
         }
+        .onChange(of: session.status) { _, status in
+            handleSessionStatusChanged(status)
+        }
+        .onChange(of: selectedSection) { _, section in
+            logSectionSelection(section)
+        }
         .onChange(of: networkPathObserver.snapshot) { oldSnapshot, newSnapshot in
             guard oldSnapshot != nil, let newSnapshot else { return }
 
@@ -159,12 +169,33 @@ struct ContentView<Session: RemoteSessionControlling,
     @ToolbarContentBuilder
     private var detailToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
-            Button("Add Host", systemImage: "plus", action: addMachine)
+            if currentSection != .recents {
+                Button("Add Host", systemImage: "plus", action: addMachine)
+            }
 
             Menu("More", systemImage: "ellipsis.circle") {
-                Button("Settings", systemImage: "gearshape", action: openSettings)
+                if currentSection == .recents {
+                    Button("Refresh Recents", systemImage: "arrow.clockwise", action: refreshRecentConnections)
+
+                    Button("Clear Recent Sessions",
+                           systemImage: "trash",
+                           role: .destructive,
+                           action: confirmClearRecentConnections)
+                        .disabled(store.recentConnections.isEmpty)
+                } else {
+                    Button("Refresh Machines", systemImage: "arrow.clockwise", action: refreshMachines)
+                }
+
                 Divider()
-                Button("Refresh Machines", systemImage: "arrow.clockwise", action: refreshMachines)
+                Button("Settings", systemImage: "gearshape", action: openSettings)
+            }
+            .confirmationDialog("Clear Recent Sessions?",
+                                isPresented: $isClearRecentConnectionsConfirmationPresented,
+                                titleVisibility: .visible) {
+                Button("Clear All", role: .destructive, action: clearRecentConnections)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This permanently removes all connection history.")
             }
         }
     }
@@ -178,7 +209,7 @@ struct ContentView<Session: RemoteSessionControlling,
                 detailContentStack
             }
             .refreshable {
-                await refreshMachineList(reason: "pullToRefresh", marksMachinesChecking: false)
+                await refreshCurrentSection()
             }
         }
     }
@@ -190,6 +221,12 @@ struct ContentView<Session: RemoteSessionControlling,
             switch currentSection {
             case .hosts:
                 hostsContent
+            case .recents:
+                RecentConnectionsView(entries: filteredRecentConnections,
+                                      isSearching: isSearching,
+                                      canReconnectDirectly: canReconnectDirectly(to:),
+                                      connect: connect(to:),
+                                      delete: deleteRecentConnection(_:))
             case .nearby:
                 nearbyContent
             }
@@ -342,6 +379,16 @@ struct ContentView<Session: RemoteSessionControlling,
         }
     }
 
+    private var filteredRecentConnections: [ConnectionHistoryEntry] {
+        guard isSearching else { return store.recentConnections }
+
+        return store.recentConnections.filter { entry in
+            entry.displayName.localizedStandardContains(searchQuery) ||
+            entry.subtitle.localizedStandardContains(searchQuery) ||
+            entry.outcome.title.localizedStandardContains(searchQuery)
+        }
+    }
+
     private var resolvedServices: [DiscoveredService] {
         browser.services.filter(\.isResolved)
     }
@@ -423,6 +470,39 @@ struct ContentView<Session: RemoteSessionControlling,
         }
     }
 
+    private func refreshRecentConnections() {
+        AppLog.ui.info("Refreshing Recents; beforeCount=\(self.store.recentConnections.count, privacy: .public)")
+        store.reload()
+        AppLog.ui.info("Finished refreshing Recents; afterCount=\(self.store.recentConnections.count, privacy: .public) filteredCount=\(self.filteredRecentConnections.count, privacy: .public) searchActive=\(self.isSearching, privacy: .public)")
+    }
+
+    private func logSectionSelection(_ section: ConnectSection?) {
+        let sectionName = section?.rawValue ?? "none"
+        AppLog.ui.info("Connect section changed; section=\(sectionName, privacy: .public) recentCount=\(self.store.recentConnections.count, privacy: .public) filteredRecentCount=\(self.filteredRecentConnections.count, privacy: .public) searchActive=\(self.isSearching, privacy: .public)")
+    }
+
+    @MainActor
+    private func refreshCurrentSection() async {
+        if currentSection == .recents {
+            refreshRecentConnections()
+        } else {
+            await refreshMachineList(reason: "pullToRefresh", marksMachinesChecking: false)
+        }
+    }
+
+    private func confirmClearRecentConnections() {
+        isClearRecentConnectionsConfirmationPresented = true
+    }
+
+    private func clearRecentConnections() {
+        isClearRecentConnectionsConfirmationPresented = false
+        store.clearRecentConnections()
+    }
+
+    private func deleteRecentConnection(_ entry: ConnectionHistoryEntry) {
+        store.deleteRecentConnection(entry)
+    }
+
     private func openSettings() {
         isSettingsPresented = true
     }
@@ -467,6 +547,38 @@ struct ContentView<Session: RemoteSessionControlling,
         connect(to: machine, password: store.password(for: machine))
     }
 
+    private func connect(to entry: ConnectionHistoryEntry) {
+        if let machine = reconnectableMachine(for: entry) {
+            AppLog.ui.info("Reconnecting from recent session to saved machine '\(machine.displayName, privacy: .public)'")
+            connect(to: machine)
+            return
+        }
+
+        AppLog.ui.info("Opening connection details for recent session '\(entry.displayName, privacy: .public)'")
+        editingPassword = ""
+        editingMachine = SavedMachine(name: entry.displayName,
+                                      host: entry.host,
+                                      port: entry.port,
+                                      username: entry.username)
+    }
+
+    private func canReconnectDirectly(to entry: ConnectionHistoryEntry) -> Bool {
+        reconnectableMachine(for: entry) != nil
+    }
+
+    private func reconnectableMachine(for entry: ConnectionHistoryEntry) -> SavedMachine? {
+        if let machineID = entry.machineID,
+           let machine = store.machine(withID: machineID) {
+            return machine
+        }
+
+        return store.machines.first { machine in
+            machine.host.caseInsensitiveCompare(entry.host) == .orderedSame &&
+            machine.port == entry.port &&
+            machine.username == entry.username
+        }
+    }
+
     private func connectFromIntent(machineID: UUID) {
         guard let machine = store.machine(withID: machineID) else {
             AppLog.ui.warning("Ignored App Intent connection request for missing machine id=\(machineID.uuidString, privacy: .public)")
@@ -499,6 +611,43 @@ struct ContentView<Session: RemoteSessionControlling,
         } else {
             session.reset()
         }
+    }
+
+    private func handleSessionStatusChanged(_ status: RemoteSessionStatus) {
+        switch status {
+        case .connected:
+            guard sessionHistoryContext == nil,
+                  let sessionMachine else {
+                return
+            }
+
+            let connectedAt = Date.now
+            let historyID = store.startSession(to: sessionMachine,
+                                               connectedAt: connectedAt)
+            sessionHistoryContext = SessionHistoryContext(id: historyID)
+            AppLog.storage.info("Session history tracking started for '\(sessionMachine.displayName, privacy: .public)'; id=\(historyID.uuidString, privacy: .public) recentCount=\(self.store.recentConnections.count, privacy: .public)")
+
+        case .disconnected(let message):
+            finishSessionHistory(outcome: message == nil ? .completed : .interrupted)
+
+        case .idle, .connecting, .reconnecting:
+            break
+        }
+    }
+
+    private func handleSessionDismissed() {
+        finishSessionHistory(outcome: .completed)
+        sessionMachine = nil
+        session.reset()
+    }
+
+    private func finishSessionHistory(outcome: ConnectionHistoryOutcome) {
+        guard let sessionHistoryContext else { return }
+
+        store.finishSession(withID: sessionHistoryContext.id,
+                            endedAt: .now,
+                            outcome: outcome)
+        self.sessionHistoryContext = nil
     }
 
     private func handlePendingIntentRequest() {
@@ -536,7 +685,8 @@ struct ContentView<Session: RemoteSessionControlling,
 
     private func connect(to machine: SavedMachine, password: String) {
         AppLog.ui.info("Presenting session for \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
-        store.recordConnection(to: machine)
+        sessionMachine = machine
+        sessionHistoryContext = nil
         session.connect(host: machine.host,
                         port: machine.port,
                         username: machine.username,

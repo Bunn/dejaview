@@ -10,6 +10,8 @@ final class ConnectionHistoryRecord {
     var port: Int = 5900
     var username: String = ""
     var connectedAt: Date = Date.now
+    var endedAt: Date?
+    var outcomeRawValue: String = ConnectionHistoryOutcome.completed.rawValue
 
     init(id: UUID = UUID(),
          machineID: UUID? = nil,
@@ -17,7 +19,9 @@ final class ConnectionHistoryRecord {
          host: String = "",
          port: Int = 5900,
          username: String = "",
-         connectedAt: Date = .now) {
+         connectedAt: Date = .now,
+         endedAt: Date? = nil,
+         outcomeRawValue: String = ConnectionHistoryOutcome.completed.rawValue) {
         self.id = id
         self.machineID = machineID
         self.displayName = displayName
@@ -25,15 +29,30 @@ final class ConnectionHistoryRecord {
         self.port = port
         self.username = username
         self.connectedAt = connectedAt
+        self.endedAt = endedAt
+        self.outcomeRawValue = outcomeRawValue
     }
 
-    convenience init(machine: SavedMachine, machineID: UUID?, connectedAt: Date = .now) {
-        self.init(machineID: machineID,
+    convenience init(id: UUID,
+                     machine: SavedMachine,
+                     machineID: UUID?,
+                     connectedAt: Date,
+                     endedAt: Date? = nil,
+                     outcome: ConnectionHistoryOutcome = .completed) {
+        self.init(id: id,
+                  machineID: machineID,
                   displayName: machine.displayName,
                   host: machine.host,
                   port: Int(machine.port),
                   username: machine.username,
-                  connectedAt: connectedAt)
+                  connectedAt: connectedAt,
+                  endedAt: endedAt,
+                  outcomeRawValue: outcome.rawValue)
+    }
+
+    func finish(at endedAt: Date, outcome: ConnectionHistoryOutcome) {
+        self.endedAt = endedAt
+        outcomeRawValue = outcome.rawValue
     }
 
     var entry: ConnectionHistoryEntry {
@@ -43,6 +62,8 @@ final class ConnectionHistoryRecord {
                                host: host,
                                port: UInt16(clamping: port),
                                username: username,
-                               connectedAt: connectedAt)
+                               connectedAt: connectedAt,
+                               endedAt: endedAt,
+                               outcome: ConnectionHistoryOutcome(rawValue: outcomeRawValue) ?? .completed)
     }
 }

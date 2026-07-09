@@ -18,8 +18,15 @@ final class MachineStore: MachineStoring {
     }
 
     func reload() {
-        machines = repository.loadMachines()
-        recentConnections = repository.loadRecentConnections(limit: recentConnectionLimit)
+        let loadedMachines = repository.loadMachines()
+        let loadedRecentConnections = repository.loadRecentConnections(limit: recentConnectionLimit)
+        machines = loadedMachines
+        recentConnections = loadedRecentConnections
+
+        let recentIDs = loadedRecentConnections.isEmpty
+            ? "none"
+            : loadedRecentConnections.map { $0.id.uuidString }.joined(separator: ",")
+        AppLog.storage.info("Machine store reloaded; machineCount=\(loadedMachines.count, privacy: .public) recentCount=\(loadedRecentConnections.count, privacy: .public) recentIDs=\(recentIDs, privacy: .public)")
     }
 
     func add(_ machine: SavedMachine, password: String) {
@@ -65,8 +72,37 @@ final class MachineStore: MachineStoring {
         return password
     }
 
-    func recordConnection(to machine: SavedMachine) {
-        repository.recordConnection(to: machine, at: .now)
+    func startSession(to machine: SavedMachine, connectedAt: Date) -> UUID {
+        let id = UUID()
+        AppLog.storage.info("Recording successful session start for '\(machine.displayName, privacy: .public)'; id=\(id.uuidString, privacy: .public)")
+        repository.startSession(withID: id,
+                                to: machine,
+                                connectedAt: connectedAt)
+        reload()
+        let containsNewEntry = recentConnections.contains { $0.id == id }
+        AppLog.storage.info("Successful session start reload completed; id=\(id.uuidString, privacy: .public) recentCount=\(self.recentConnections.count, privacy: .public) containsNewEntry=\(containsNewEntry, privacy: .public)")
+        return id
+    }
+
+    func finishSession(withID id: UUID,
+                       endedAt: Date,
+                       outcome: ConnectionHistoryOutcome) {
+        AppLog.storage.info("Finalizing session history id=\(id.uuidString, privacy: .public); outcome=\(outcome.rawValue, privacy: .public)")
+        repository.finishSession(withID: id,
+                                 endedAt: endedAt,
+                                 outcome: outcome)
+        reload()
+    }
+
+    func deleteRecentConnection(_ entry: ConnectionHistoryEntry) {
+        AppLog.storage.info("Deleting recent connection id=\(entry.id.uuidString, privacy: .public)")
+        repository.deleteRecentConnection(withID: entry.id)
+        reload()
+    }
+
+    func clearRecentConnections() {
+        AppLog.storage.info("Clearing recent connections")
+        repository.clearRecentConnections()
         reload()
     }
 

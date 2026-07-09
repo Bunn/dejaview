@@ -4,6 +4,7 @@ struct ConnectSidebarView: View {
     @Binding var selection: ConnectSection?
 
     let hostCount: Int
+    let recentCount: Int
     let nearbyCount: Int
 
     var body: some View {
@@ -25,6 +26,8 @@ struct ConnectSidebarView: View {
         switch section {
         case .hosts:
             hostCount
+        case .recents:
+            recentCount
         case .nearby:
             nearbyCount
         }

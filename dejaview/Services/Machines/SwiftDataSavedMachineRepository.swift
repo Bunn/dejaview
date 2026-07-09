@@ -89,27 +89,87 @@ final class SwiftDataSavedMachineRepository: SavedMachineRepository, @unchecked 
         descriptor.fetchLimit = limit
 
         do {
-            return try context.fetch(descriptor).map(\.entry)
+            let records = try context.fetch(descriptor)
+            AppLog.storage.info("Loaded connection history from SwiftData; requestedLimit=\(limit, privacy: .public) count=\(records.count, privacy: .public) records=\(self.connectionHistorySummary(records), privacy: .public)")
+            return records.map(\.entry)
         } catch {
-            AppLog.storage.error("Failed to fetch connection history from SwiftData: \(error.localizedDescription, privacy: .public)")
+            AppLog.storage.error("Failed to fetch connection history from SwiftData; \(self.errorSummary(error), privacy: .public)")
             return []
         }
     }
 
-    func recordConnection(to machine: SavedMachine, at date: Date) {
+    func startSession(withID id: UUID,
+                      to machine: SavedMachine,
+                      connectedAt: Date) {
         performLegacyMigrationIfNeeded()
 
         let context = ModelContext(modelContainer)
         let savedRecord = machineRecord(withID: machine.id, in: context)
 
-        savedRecord?.lastConnectedAt = date
-        savedRecord?.updatedAt = date
+        savedRecord?.lastConnectedAt = connectedAt
+        savedRecord?.updatedAt = connectedAt
 
-        context.insert(ConnectionHistoryRecord(machine: machine,
-                                               machineID: savedRecord?.id,
-                                               connectedAt: date))
+        let historyRecord = ConnectionHistoryRecord(id: id,
+                                                    machine: machine,
+                                                    machineID: savedRecord?.id,
+                                                    connectedAt: connectedAt)
+        context.insert(historyRecord)
+        AppLog.storage.info("Inserted session history into ModelContext; id=\(id.uuidString, privacy: .public) savedMachineMatched=\(savedRecord != nil, privacy: .public) connectedAt=\(connectedAt.timeIntervalSince1970, privacy: .public)")
         pruneConnectionHistory(in: context)
+
+        if save(context, operation: "startSession") {
+            logConnectionHistorySnapshot(reason: "afterStartSessionSave")
+        }
+    }
+
+    func finishSession(withID id: UUID,
+                       endedAt: Date,
+                       outcome: ConnectionHistoryOutcome) {
+        performLegacyMigrationIfNeeded()
+
+        let context = ModelContext(modelContainer)
+
+        guard let record = connectionHistoryRecord(withID: id, in: context) else {
+            AppLog.storage.warning("Could not finalize missing connection history id=\(id.uuidString, privacy: .public)")
+            logConnectionHistorySnapshot(reason: "finishSessionRecordMissing")
+            return
+        }
+
+        record.finish(at: endedAt, outcome: outcome)
+        AppLog.storage.info("Updated session history before final save; id=\(id.uuidString, privacy: .public) endedAt=\(endedAt.timeIntervalSince1970, privacy: .public) outcome=\(outcome.rawValue, privacy: .public)")
+
+        if save(context, operation: "finishSession") {
+            logConnectionHistorySnapshot(reason: "afterFinishSessionSave")
+        }
+    }
+
+    func deleteRecentConnection(withID id: UUID) {
+        performLegacyMigrationIfNeeded()
+
+        let context = ModelContext(modelContainer)
+
+        guard let record = connectionHistoryRecord(withID: id, in: context) else {
+            AppLog.storage.warning("Attempted to delete missing connection history id=\(id.uuidString, privacy: .public)")
+            return
+        }
+
+        context.delete(record)
         save(context)
+    }
+
+    func clearRecentConnections() {
+        performLegacyMigrationIfNeeded()
+
+        let context = ModelContext(modelContainer)
+        let descriptor = FetchDescriptor<ConnectionHistoryRecord>()
+
+        do {
+            let records = try context.fetch(descriptor)
+            records.forEach(context.delete)
+            save(context)
+        } catch {
+            AppLog.storage.error("Failed to clear connection history: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     func password(for id: UUID) -> String? {
@@ -218,6 +278,36 @@ final class SwiftDataSavedMachineRepository: SavedMachineRepository, @unchecked 
         }
     }
 
+    private func connectionHistoryRecord(withID id: UUID,
+                                         in context: ModelContext) -> ConnectionHistoryRecord? {
+        var descriptor = FetchDescriptor<ConnectionHistoryRecord>(
+            predicate: #Predicate<ConnectionHistoryRecord> { record in
+                record.id == id
+            }
+        )
+        descriptor.fetchLimit = 1
+
+        do {
+            if let record = try context.fetch(descriptor).first {
+                AppLog.storage.info("Found connection history by predicate; id=\(id.uuidString, privacy: .public)")
+                return record
+            }
+
+            let allRecords = try context.fetch(FetchDescriptor<ConnectionHistoryRecord>())
+
+            if let record = allRecords.first(where: { $0.id == id }) {
+                AppLog.storage.warning("Connection history predicate missed an existing record; using in-memory fallback id=\(id.uuidString, privacy: .public) totalCount=\(allRecords.count, privacy: .public)")
+                return record
+            }
+
+            AppLog.storage.warning("Connection history lookup returned no record; requestedID=\(id.uuidString, privacy: .public) totalCount=\(allRecords.count, privacy: .public) records=\(self.connectionHistorySummary(allRecords), privacy: .public)")
+            return nil
+        } catch {
+            AppLog.storage.error("Failed to fetch connection history id=\(id.uuidString, privacy: .public); \(self.errorSummary(error), privacy: .public)")
+            return nil
+        }
+    }
+
     private func nextSortOrder(in context: ModelContext) -> Int {
         var descriptor = FetchDescriptor<SavedMachineRecord>(
             sortBy: [SortDescriptor(\SavedMachineRecord.sortOrder, order: .reverse)]
@@ -233,24 +323,61 @@ final class SwiftDataSavedMachineRepository: SavedMachineRepository, @unchecked 
     }
 
     private func pruneConnectionHistory(in context: ModelContext) {
-        var descriptor = FetchDescriptor<ConnectionHistoryRecord>(
+        let descriptor = FetchDescriptor<ConnectionHistoryRecord>(
             sortBy: [SortDescriptor(\ConnectionHistoryRecord.connectedAt, order: .reverse)]
         )
-        descriptor.fetchOffset = maximumHistoryCount
 
         do {
-            let staleRecords = try context.fetch(descriptor)
+            // SwiftData can apply `fetchOffset` incorrectly when the context has
+            // pending inserts, which caused a brand-new first record to be
+            // returned as stale and deleted. Select the overflow explicitly.
+            let allRecords = try context.fetch(descriptor)
+            let staleRecords = Array(allRecords.dropFirst(maximumHistoryCount))
+            AppLog.storage.info("Evaluated connection history pruning; maximumCount=\(self.maximumHistoryCount, privacy: .public) totalCount=\(allRecords.count, privacy: .public) staleCount=\(staleRecords.count, privacy: .public) staleRecords=\(self.connectionHistorySummary(staleRecords), privacy: .public)")
             staleRecords.forEach(context.delete)
         } catch {
-            AppLog.storage.error("Failed to prune connection history: \(error.localizedDescription, privacy: .public)")
+            AppLog.storage.error("Failed to prune connection history; \(self.errorSummary(error), privacy: .public)")
         }
     }
 
-    private func save(_ context: ModelContext) {
+    private func logConnectionHistorySnapshot(reason: String) {
+        let context = ModelContext(modelContainer)
+        let descriptor = FetchDescriptor<ConnectionHistoryRecord>(
+            sortBy: [SortDescriptor(\ConnectionHistoryRecord.connectedAt, order: .reverse)]
+        )
+
+        do {
+            let records = try context.fetch(descriptor)
+            AppLog.storage.info("Connection history snapshot; reason=\(reason, privacy: .public) count=\(records.count, privacy: .public) records=\(self.connectionHistorySummary(records), privacy: .public)")
+        } catch {
+            AppLog.storage.error("Failed to inspect connection history; reason=\(reason, privacy: .public) \(self.errorSummary(error), privacy: .public)")
+        }
+    }
+
+    private func connectionHistorySummary(_ records: [ConnectionHistoryRecord]) -> String {
+        guard !records.isEmpty else { return "none" }
+
+        return records.map { record in
+            "id=\(record.id.uuidString),finished=\(record.endedAt != nil),outcome=\(record.outcomeRawValue)"
+        }
+        .joined(separator: ";")
+    }
+
+    private func errorSummary(_ error: Error) -> String {
+        let nsError = error as NSError
+        return "domain=\(nsError.domain),code=\(nsError.code),description=\(nsError.localizedDescription),debug=\(String(reflecting: error))"
+    }
+
+    @discardableResult
+    private func save(_ context: ModelContext,
+                      operation: String = "repositoryMutation") -> Bool {
         do {
             try context.save()
+            AppLog.storage.info("Saved SwiftData changes; operation=\(operation, privacy: .public)")
+            return true
         } catch {
-            AppLog.storage.error("Failed to save SwiftData changes: \(error.localizedDescription, privacy: .public)")
+            AppLog.storage.error("Failed to save SwiftData changes; operation=\(operation, privacy: .public) \(self.errorSummary(error), privacy: .public)")
+            return false
         }
     }
 }

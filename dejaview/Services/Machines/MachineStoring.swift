@@ -12,5 +12,10 @@ protocol MachineStoring: AnyObject {
     func contains(_ machine: SavedMachine) -> Bool
     func machine(withID id: UUID) -> SavedMachine?
     func password(for machine: SavedMachine) -> String
-    func recordConnection(to machine: SavedMachine)
+    func startSession(to machine: SavedMachine, connectedAt: Date) -> UUID
+    func finishSession(withID id: UUID,
+                       endedAt: Date,
+                       outcome: ConnectionHistoryOutcome)
+    func deleteRecentConnection(_ entry: ConnectionHistoryEntry)
+    func clearRecentConnections()
 }

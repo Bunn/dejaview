@@ -48,6 +48,12 @@ protocol RemoteSessionControlling: ObservableObject, RemoteSessionInputControlli
     func toggleClipboardSync()
     func toggleTouchMode()
     func retryConnect()
+    func cancelReconnect()
+    func updateNetworkPathStatus(_ status: NetworkPathStatus)
+
+#if DEBUG
+    func debugSimulateConnectionInterruption()
+#endif
 }
 
 extension RemoteSessionInputControlling {

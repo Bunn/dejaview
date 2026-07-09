@@ -69,19 +69,37 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     private var port: UInt16 = 5900
     private var username = ""
     private var password = ""
-    private var reconnectPending = false
+    private let automaticReconnectPolicy = AutomaticReconnectPolicy()
+    private var automaticReconnectTask: Task<Void, Never>?
+    private var settingsReconnectTask: Task<Void, Never>?
+    private var automaticReconnectAttempt = 0
+    private var settingsReconnectPending = false
+    private var hasConnectedAtLeastOnce = false
+    private var disconnectRequested = false
+    private var networkPathStatus: NetworkPathStatus?
+    private var lastDisconnectMessage: String?
     private var heldModifierKeys: Set<RemoteModifierKey> = []
     private static let combinedFramebufferAspectRatioThreshold: CGFloat = 2.4
 
     // MARK: - Lifecycle
 
     func connect(host: String, port: UInt16, username: String, password: String) {
-        AppLog.session.info("Connecting to VNC host \(host, privacy: .public):\(port, privacy: .public); usernameProvided=\(!username.isEmpty, privacy: .public); quality=\(self.quality.rawValue, privacy: .public); clipboard=\(self.isClipboardSyncEnabled, privacy: .public)")
-
+        cancelReconnectTasks()
         self.host = host
         self.port = port
         self.username = username
         self.password = password
+        automaticReconnectAttempt = 0
+        settingsReconnectPending = false
+        hasConnectedAtLeastOnce = false
+        disconnectRequested = false
+        lastDisconnectMessage = nil
+
+        startConnection()
+    }
+
+    private func startConnection(preservingStatus: Bool = false) {
+        AppLog.session.info("Connecting to VNC host \(self.host, privacy: .public):\(self.port, privacy: .public); usernameProvided=\(!self.username.isEmpty, privacy: .public); quality=\(self.quality.rawValue, privacy: .public); clipboard=\(self.isClipboardSyncEnabled, privacy: .public); automaticReconnectAttempt=\(self.automaticReconnectAttempt, privacy: .public)")
 
         let settings = VNCConnection.Settings(
             isDebugLoggingEnabled: false,
@@ -100,20 +118,37 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
         connection.delegate = self
         self.connection = connection // Keep a strong reference
 
-        status = .connecting
+        if !preservingStatus {
+            status = .connecting
+        }
+
         connection.connect()
     }
 
     func disconnect() {
         AppLog.session.info("Disconnect requested")
+        disconnectRequested = true
+        settingsReconnectPending = false
+        cancelReconnectTasks()
         releaseHeldModifiers()
-        connection?.disconnect()
+
+        if let connection {
+            connection.disconnect()
+        } else {
+            finishDisconnected(message: lastDisconnectMessage)
+        }
     }
 
     /// Returns the session to a clean state after the session UI is dismissed.
     func reset() {
         AppLog.session.info("Resetting session state")
-        reconnectPending = false
+        disconnectRequested = true
+        settingsReconnectPending = false
+        automaticReconnectAttempt = 0
+        hasConnectedAtLeastOnce = false
+        lastDisconnectMessage = nil
+        networkPathStatus = nil
+        cancelReconnectTasks()
         releaseHeldModifiers()
         cancelPendingFramebufferUpdates()
         connection?.delegate = nil
@@ -156,26 +191,222 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
 
     private func applySettingsChange() {
         // Only reconnect for an established session; never stack reconnects.
-        guard status == .connected, !reconnectPending else {
-            AppLog.session.debug("Skipped settings reconnect; status=\(String(describing: self.status), privacy: .public) reconnectPending=\(self.reconnectPending, privacy: .public)")
+        guard status == .connected, !settingsReconnectPending else {
+            AppLog.session.debug("Skipped settings reconnect; status=\(String(describing: self.status), privacy: .public) reconnectPending=\(self.settingsReconnectPending, privacy: .public)")
             return
         }
 
         AppLog.session.info("Applying settings change by reconnecting session")
         releaseHeldModifiers()
-        reconnectPending = true
+        disconnectRequested = false
+        settingsReconnectPending = true
         connection?.disconnect()
     }
 
     /// Retries the last connection (e.g. from the disconnected screen).
     func retryConnect() {
-        guard !host.isEmpty, case .disconnected = status else {
-            AppLog.session.warning("Retry requested but no disconnected session is available")
+        guard !host.isEmpty else {
+            AppLog.session.warning("Retry requested without a previous connection")
             return
         }
 
-        AppLog.session.info("Retrying connection to \(self.host, privacy: .public):\(self.port, privacy: .public)")
-        connect(host: host, port: port, username: username, password: password)
+        switch status {
+        case .disconnected:
+            AppLog.session.info("Manually retrying connection to \(self.host, privacy: .public):\(self.port, privacy: .public)")
+            cancelReconnectTasks()
+            automaticReconnectAttempt = 0
+            disconnectRequested = false
+            startConnection()
+
+        case .reconnecting(let reconnectState) where reconnectState.canRetryImmediately:
+            AppLog.session.info("Retrying automatic reconnect immediately; attempt=\(reconnectState.attempt, privacy: .public)")
+            cancelAutomaticReconnect()
+            performAutomaticReconnectAttempt(reconnectState.attempt)
+
+        default:
+            AppLog.session.warning("Retry requested while connection state was \(self.status.logDescription, privacy: .public)")
+        }
+    }
+
+    func cancelReconnect() {
+        guard case .reconnecting = status else { return }
+
+        AppLog.session.info("Automatic reconnect cancelled")
+        disconnectRequested = true
+        cancelAutomaticReconnect()
+        releaseHeldModifiers()
+
+        if let connection {
+            connection.delegate = nil
+            connection.disconnect()
+            self.connection = nil
+        }
+
+        finishDisconnected(message: lastDisconnectMessage)
+    }
+
+    func updateNetworkPathStatus(_ pathStatus: NetworkPathStatus) {
+        networkPathStatus = pathStatus
+
+        guard case .reconnecting(let reconnectState) = status else { return }
+
+        switch pathStatus {
+        case .satisfied:
+            guard reconnectState.phase == .waitingForNetwork else { return }
+
+            AppLog.session.info("Network became available during reconnect; retrying now")
+            performAutomaticReconnectAttempt(reconnectState.attempt)
+
+        case .unsatisfied, .requiresConnection:
+            guard case .waiting = reconnectState.phase else { return }
+
+            AppLog.session.info("Network became unavailable during reconnect; pausing retry countdown")
+            cancelAutomaticReconnect()
+            status = .reconnecting(RemoteReconnectState(attempt: reconnectState.attempt,
+                                                        maximumAttempts: reconnectState.maximumAttempts,
+                                                        phase: .waitingForNetwork))
+        }
+    }
+
+#if DEBUG
+    func debugSimulateConnectionInterruption() {
+        guard status == .connected, let connection else {
+            AppLog.session.warning("DEBUG reconnect test ignored because no session is connected")
+            return
+        }
+
+        AppLog.session.warning("DEBUG simulating unexpected VNC connection interruption")
+        disconnectRequested = false
+        settingsReconnectPending = false
+        connection.disconnect()
+    }
+#endif
+
+    private var isNetworkAvailable: Bool {
+        networkPathStatus == nil || networkPathStatus == .satisfied
+    }
+
+    private func beginAutomaticReconnect(message: String?) {
+        lastDisconnectMessage = message ?? "The connection was interrupted."
+
+        let attempt = automaticReconnectAttempt + 1
+
+        guard let delay = automaticReconnectPolicy.delay(beforeAttempt: attempt) else {
+            let message = "Glassy View couldn't reconnect after \(automaticReconnectPolicy.maximumAttempts) attempts."
+            AppLog.session.error("Automatic reconnect attempts exhausted")
+            finishDisconnected(message: message)
+            return
+        }
+
+        automaticReconnectAttempt = attempt
+
+        guard isNetworkAvailable else {
+            AppLog.session.info("Waiting for network before automatic reconnect attempt \(attempt, privacy: .public)")
+            status = .reconnecting(RemoteReconnectState(attempt: attempt,
+                                                        maximumAttempts: automaticReconnectPolicy.maximumAttempts,
+                                                        phase: .waitingForNetwork))
+            return
+        }
+
+        scheduleAutomaticReconnectAttempt(attempt, after: delay)
+    }
+
+    private func scheduleAutomaticReconnectAttempt(_ attempt: Int, after delay: TimeInterval) {
+        cancelAutomaticReconnect()
+
+        let retryDate = Date.now.addingTimeInterval(delay)
+        status = .reconnecting(RemoteReconnectState(attempt: attempt,
+                                                    maximumAttempts: automaticReconnectPolicy.maximumAttempts,
+                                                    phase: .waiting(until: retryDate)))
+
+        AppLog.session.info("Scheduling automatic reconnect; attempt=\(attempt, privacy: .public) delaySeconds=\(delay, privacy: .public)")
+
+        automaticReconnectTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+
+            self?.automaticReconnectTask = nil
+            self?.performAutomaticReconnectAttempt(attempt)
+        }
+    }
+
+    private func performAutomaticReconnectAttempt(_ attempt: Int) {
+        guard !disconnectRequested,
+              automaticReconnectAttempt == attempt else {
+            return
+        }
+
+        guard isNetworkAvailable else {
+            status = .reconnecting(RemoteReconnectState(attempt: attempt,
+                                                        maximumAttempts: automaticReconnectPolicy.maximumAttempts,
+                                                        phase: .waitingForNetwork))
+            return
+        }
+
+        automaticReconnectTask = nil
+        status = .reconnecting(RemoteReconnectState(attempt: attempt,
+                                                    maximumAttempts: automaticReconnectPolicy.maximumAttempts,
+                                                    phase: .connecting))
+        startConnection(preservingStatus: true)
+    }
+
+    private func scheduleSettingsReconnect() {
+        settingsReconnectTask?.cancel()
+        status = .connecting
+        AppLog.session.info("Scheduling reconnect after settings change")
+
+        settingsReconnectTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self else { return }
+            guard self.status == .connecting,
+                  self.connection == nil,
+                  !self.disconnectRequested else {
+                return
+            }
+
+            self.settingsReconnectTask = nil
+            self.startConnection()
+        }
+    }
+
+    private func finishDisconnected(message: String?) {
+        cancelReconnectTasks()
+        cancelPendingFramebufferUpdates()
+        connection?.delegate = nil
+        connection = nil
+        clearFramebuffer()
+        cursor = nil
+        automaticReconnectAttempt = 0
+        status = .disconnected(message)
+    }
+
+    private func cancelAutomaticReconnect() {
+        automaticReconnectTask?.cancel()
+        automaticReconnectTask = nil
+    }
+
+    private func cancelReconnectTasks() {
+        cancelAutomaticReconnect()
+        settingsReconnectTask?.cancel()
+        settingsReconnectTask = nil
+    }
+
+    private static func isRetryableConnectionFailure(_ error: Error?) -> Bool {
+        guard let error else { return true }
+        guard let vncError = error as? VNCError else { return false }
+
+        switch vncError {
+        case .connection(let connectionError):
+            if case .cancelled = connectionError {
+                return false
+            } else {
+                return true
+            }
+        case .authentication, .protocol:
+            return false
+        @unknown default:
+            return false
+        }
     }
 
     // MARK: - Pointer input
@@ -661,6 +892,8 @@ extension VNCSession: VNCConnectionDelegate {
     func connection(_ connection: VNCConnection,
                     stateDidChange connectionState: VNCConnection.ConnectionState) {
         let status = connectionState.status
+        let connectionID = ObjectIdentifier(connection)
+        let retryableConnectionFailure = Self.isRetryableConnectionFailure(connectionState.error)
         let userFacingMessage: String?
 
         if let error = connectionState.error as? VNCError,
@@ -674,13 +907,27 @@ extension VNCSession: VNCConnectionDelegate {
 
         Task { @MainActor [weak self] in
             guard let self else { return }
+            guard self.connection.map(ObjectIdentifier.init) == connectionID else {
+                AppLog.session.debug("Ignored state change from stale VNC connection")
+                return
+            }
 
             AppLog.session.info("VNC connection state changed to \(String(describing: status), privacy: .public)")
 
             switch status {
             case .connecting:
+                if case .reconnecting = self.status {
+                    break
+                }
+
                 self.status = .connecting
             case .connected:
+                self.cancelReconnectTasks()
+                self.automaticReconnectAttempt = 0
+                self.settingsReconnectPending = false
+                self.hasConnectedAtLeastOnce = true
+                self.disconnectRequested = false
+                self.lastDisconnectMessage = nil
                 self.status = .connected
             case .disconnected:
                 if let errorDescription {
@@ -693,32 +940,23 @@ extension VNCSession: VNCConnectionDelegate {
                 self.releaseHeldModifiers()
                 self.cancelPendingFramebufferUpdates()
                 self.connection = nil
-                self.clearFramebuffer()
-                self.cursor = nil
 
-                if self.reconnectPending {
+                if self.settingsReconnectPending {
                     // Settings changed mid-session: reconnect with new settings.
                     // Wait for macOS's Screen Sharing daemon to release the old
                     // session first — reconnecting instantly gets the new
                     // connection reset (and rapid retries can make the Mac
                     // refuse connections for a while).
-                    self.reconnectPending = false
-                    self.status = .connecting
-                    AppLog.session.info("Scheduling reconnect after settings change")
-
-                    Task { @MainActor [weak self] in
-                        try? await Task.sleep(for: .seconds(2))
-                        guard let self else { return }
-                        // Bail if the user dismissed the session meanwhile.
-                        guard self.status == .connecting, self.connection == nil else { return }
-
-                        self.connect(host: self.host,
-                                     port: self.port,
-                                     username: self.username,
-                                     password: self.password)
-                    }
+                    self.settingsReconnectPending = false
+                    self.clearFramebuffer()
+                    self.cursor = nil
+                    self.scheduleSettingsReconnect()
+                } else if self.hasConnectedAtLeastOnce,
+                          !self.disconnectRequested,
+                          retryableConnectionFailure {
+                    self.beginAutomaticReconnect(message: userFacingMessage)
                 } else {
-                    self.status = .disconnected(userFacingMessage)
+                    self.finishDisconnected(message: userFacingMessage)
                 }
             default:
                 break

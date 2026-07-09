@@ -24,6 +24,14 @@ struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
 
             Toggle("Clipboard Sync", systemImage: "doc.on.clipboard",
                    isOn: clipboardBinding)
+
+#if DEBUG
+            Section("Debug") {
+                Button("Test Automatic Reconnect",
+                       systemImage: "arrow.triangle.2.circlepath",
+                       action: session.debugSimulateConnectionInterruption)
+            }
+#endif
         } label: {
             Label("Session Options", systemImage: "slider.horizontal.3")
                 .labelStyle(.iconOnly)

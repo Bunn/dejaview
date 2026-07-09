@@ -18,9 +18,9 @@ struct SessionView<Session: RemoteSessionControlling>: View {
     @State private var textToSend = ""
     @State private var streamZoomScale: CGFloat = 1
     @State private var followsCursorWhenZoomed = true
+    @State private var networkPathObserver = NetworkPathObserver()
     @FocusState private var inputFocused: Bool
 
-    private let freeSessionDuration: Duration = .seconds(120)
     private let freeSessionDurationInterval: TimeInterval = 120
 
     var body: some View {
@@ -81,7 +81,15 @@ struct SessionView<Session: RemoteSessionControlling>: View {
                                   purchase: purchaseFromFreeSessionTimerInfo)
         }
         .onAppear {
+            networkPathObserver.start()
             logDisplayControlState(reason: "sessionViewAppeared")
+        }
+        .onDisappear {
+            networkPathObserver.stop()
+        }
+        .onChange(of: networkPathObserver.snapshot?.status, initial: true) { _, pathStatus in
+            guard let pathStatus else { return }
+            session.updateNetworkPathStatus(pathStatus)
         }
         .onChange(of: session.status) { _, _ in
             logDisplayControlState(reason: "statusChanged")
@@ -108,7 +116,7 @@ struct SessionView<Session: RemoteSessionControlling>: View {
                 freeSessionEndDate = nil
             }
         }
-        .task(id: isConnectedFreeSession) {
+        .task(id: isFreeSessionLifecycleActive) {
             await enforceFreeSessionLimitIfNeeded()
         }
     }
@@ -135,13 +143,18 @@ struct SessionView<Session: RemoteSessionControlling>: View {
             }
 
         case .connected:
-            RemoteDesktopView(session: session,
-                              selectedFramebufferFrame: session.selectedDisplayFrame,
-                              zoomScale: $streamZoomScale,
-                              followsCursor: followsCursorWhenZoomed,
-                              acceptsHardwareKeyboardInput: acceptsRemoteHardwareKeyboardInput)
-                .id(session.displaySelection.id)
-                .ignoresSafeArea()
+            SessionRemoteContent(session: session,
+                                 reconnectState: nil,
+                                 zoomScale: $streamZoomScale,
+                                 followsCursor: followsCursorWhenZoomed,
+                                 acceptsHardwareKeyboardInput: acceptsRemoteHardwareKeyboardInput)
+
+        case .reconnecting(let reconnectState):
+            SessionRemoteContent(session: session,
+                                 reconnectState: reconnectState,
+                                 zoomScale: $streamZoomScale,
+                                 followsCursor: followsCursorWhenZoomed,
+                                 acceptsHardwareKeyboardInput: false)
 
         case .disconnected(let message):
             VStack(spacing: 14) {
@@ -212,13 +225,29 @@ struct SessionView<Session: RemoteSessionControlling>: View {
         session.status == .connected && !subscriptionStore.hasProAccess
     }
 
+    private var isFreeSessionLifecycleActive: Bool {
+        guard !subscriptionStore.hasProAccess else { return false }
+
+        switch session.status {
+        case .connected, .reconnecting:
+            return true
+        case .connecting:
+            return freeSessionEndDate != nil
+        case .idle, .disconnected:
+            return false
+        }
+    }
+
     private var freeSessionHasExpired: Bool {
         guard let freeSessionEndDate else { return false }
         return freeSessionEndDate <= Date.now
     }
 
     private var acceptsRemoteHardwareKeyboardInput: Bool {
-        !showsInputBar && !isSessionPaywallPresented && !isFreeSessionTimerInfoPresented
+        session.status == .connected
+            && !showsInputBar
+            && !isSessionPaywallPresented
+            && !isFreeSessionTimerInfoPresented
     }
 
     private func logDisplayControlState(reason: String) {
@@ -235,21 +264,32 @@ struct SessionView<Session: RemoteSessionControlling>: View {
     }
 
     private func enforceFreeSessionLimitIfNeeded() async {
-        guard isConnectedFreeSession else {
+        guard isFreeSessionLifecycleActive else {
             freeSessionEndDate = nil
             return
         }
 
-        freeSessionEndDate = Date.now.addingTimeInterval(freeSessionDurationInterval)
+        if freeSessionEndDate == nil {
+            freeSessionEndDate = Date.now.addingTimeInterval(freeSessionDurationInterval)
+        }
 
-        try? await Task.sleep(for: freeSessionDuration)
+        guard let freeSessionEndDate else { return }
+        let remainingDuration = max(0, freeSessionEndDate.timeIntervalSinceNow)
+
+        try? await Task.sleep(for: .seconds(remainingDuration))
 
         guard !Task.isCancelled else { return }
-        guard session.status == .connected else { return }
-        guard !subscriptionStore.hasProAccess else { return }
 
-        AppLog.subscriptions.info("Free session limit reached; presenting paywall")
-        presentSessionPaywall(endsSessionOnDismiss: true)
+        while isFreeSessionLifecycleActive {
+            if session.status == .connected {
+                AppLog.subscriptions.info("Free session limit reached; presenting paywall")
+                presentSessionPaywall(endsSessionOnDismiss: true)
+                return
+            }
+
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+        }
     }
 
     private func handleSessionProAccessGranted() {
@@ -322,10 +362,10 @@ struct SessionView<Session: RemoteSessionControlling>: View {
     private func toggleInputBar() {
         showsInputBar.toggle()
 
-            if !showsInputBar {
-                inputFocused = false
-                releaseHeldModifierKeys()
-            }
+        if !showsInputBar {
+            inputFocused = false
+            releaseHeldModifierKeys()
+        }
 
         AppLog.ui.info("Software input bar visibility changed; visible=\(self.showsInputBar, privacy: .public)")
         inputFocused = showsInputBar

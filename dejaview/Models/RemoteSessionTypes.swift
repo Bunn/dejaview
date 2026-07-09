@@ -5,6 +5,7 @@ enum RemoteSessionStatus: Equatable {
     case idle
     case connecting
     case connected
+    case reconnecting(RemoteReconnectState)
     case disconnected(String?)
 
     var logDescription: String {
@@ -15,6 +16,8 @@ enum RemoteSessionStatus: Equatable {
             "connecting"
         case .connected:
             "connected"
+        case .reconnecting(let state):
+            "reconnecting(attempt=\(state.attempt),phase=\(String(describing: state.phase)))"
         case .disconnected(let message):
             "disconnected(messageProvided=\(message != nil))"
         }

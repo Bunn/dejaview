@@ -23,7 +23,7 @@ struct ReachabilityStatusBadge: View {
 private extension MachineReachabilityStatus {
     var color: Color {
         switch self {
-        case .checking:
+        case .checking, .waking:
             .orange
         case .reachable:
             .green

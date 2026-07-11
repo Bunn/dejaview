@@ -12,6 +12,7 @@ struct ContentView<Session: RemoteSessionControlling,
     @State private var store: Store
     @State private var intentRouter: Router
     @State private var networkPathObserver = NetworkPathObserver()
+    private let wakeOnLANSender: any WakeOnLANSending
 
     @State private var selectedSection: ConnectSection? = .hosts
     @State private var searchText = ""
@@ -35,15 +36,23 @@ struct ContentView<Session: RemoteSessionControlling,
     @State private var machineReachabilityEndpoints: [UUID: String] = [:]
     @State private var reachabilityProbeGeneration = 0
     @State private var shouldSkipNextSceneActiveRefresh = true
+    @State private var wakingMachineID: UUID?
+    @State private var wakeRequestID: UUID?
+    @State private var wakeTask: Task<Void, Never>?
+    @State private var wakeFailureMessage = ""
+    @State private var isWakeFailurePresented = false
 
     private let appleScreenSharingHelpURL = URL(string: "https://support.apple.com/guide/mac-help/turn-screen-sharing-on-or-off-mh11848/mac")!
     private let reachabilityRefreshInterval: Duration = .seconds(30)
+    private let wakeReachabilityAttemptCount = 20
+    private let wakeReachabilityPollInterval: Duration = .seconds(2)
 
     init(dependencies: AppDependencies<Session, Browser, Store, Router>) {
         _session = StateObject(wrappedValue: dependencies.makeSession())
         _browser = State(initialValue: dependencies.makeBrowser())
         _store = State(initialValue: dependencies.makeStore())
         _intentRouter = State(initialValue: dependencies.makeIntentRouter())
+        wakeOnLANSender = dependencies.wakeOnLANSender
     }
 
     var body: some View {
@@ -95,6 +104,10 @@ struct ContentView<Session: RemoteSessionControlling,
             }
         } message: { machine in
             Text("This removes \(machine.displayName) from your saved machines.")
+        }
+        .alert("Wake on LAN", isPresented: $isWakeFailurePresented) {
+        } message: {
+            Text(wakeFailureMessage)
         }
         .onAppear {
             AppLog.ui.info("Connect view appeared; starting nearby Mac discovery")
@@ -276,13 +289,13 @@ struct ContentView<Session: RemoteSessionControlling,
         LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 16) {
             ForEach(filteredMachines) { machine in
                 SavedMachineTile(machine: machine,
-                                 reachabilityStatus: reachabilityStatus(for: machine)) {
-                    connect(to: machine)
-                } edit: {
-                    edit(machine)
-                } delete: {
-                    confirmDelete(machine)
-                }
+                                 reachabilityStatus: reachabilityStatus(for: machine),
+                                 isWaking: wakingMachineID == machine.id,
+                                 connect: { connect(to: machine) },
+                                 wakeAndConnect: wakeAction(for: machine),
+                                 cancelWake: cancelWakeAttempt,
+                                 edit: { edit(machine) },
+                                 delete: { confirmDelete(machine) })
             }
 
             ForEach(filteredServices) { service in
@@ -460,6 +473,10 @@ struct ContentView<Session: RemoteSessionControlling,
             pendingConnectionPassword = ""
         }
 
+        if wakingMachineID == machine.id {
+            cancelWakeAttempt()
+        }
+
         machineReachabilityStatuses[machine.id] = nil
         machineReachabilityEndpoints[machine.id] = nil
         store.delete(machine)
@@ -539,13 +556,13 @@ struct ContentView<Session: RemoteSessionControlling,
 
         AppLog.ui.info("Starting pending direct connection to \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
         pendingConnectionMachine = nil
-        connect(to: machine, password: pendingConnectionPassword)
+        connectOrWake(to: machine, password: pendingConnectionPassword)
         pendingConnectionPassword = ""
     }
 
     private func connect(to machine: SavedMachine) {
         AppLog.ui.info("Starting saved machine connection to '\(machine.displayName, privacy: .public)'")
-        connect(to: machine, password: store.password(for: machine))
+        connectOrWake(to: machine, password: store.password(for: machine))
     }
 
     private func connect(to entry: ConnectionHistoryEntry) {
@@ -694,7 +711,8 @@ struct ContentView<Session: RemoteSessionControlling,
         }
     }
 
-    private func connect(to machine: SavedMachine, password: String) {
+    private func presentSession(for machine: SavedMachine, password: String) {
+        cancelWakeAttempt(logCancellation: false)
         AppLog.ui.info("Presenting session for \(machine.host, privacy: .public):\(machine.port, privacy: .public)")
         let preferences = store.contains(machine)
             ? store.sessionPreferences(for: machine)
@@ -712,10 +730,144 @@ struct ContentView<Session: RemoteSessionControlling,
         isSessionPresented = true
     }
 
+    // MARK: - Wake on LAN
+
+    private func wakeAction(for machine: SavedMachine) -> (() -> Void)? {
+        guard machine.wakeOnLANAddress != nil else { return nil }
+        return { wakeAndConnect(to: machine) }
+    }
+
+    private func connectOrWake(to machine: SavedMachine, password: String) {
+        guard machine.wakeOnLANAddress != nil,
+              reachabilityStatus(for: machine) != .reachable else {
+            presentSession(for: machine, password: password)
+            return
+        }
+
+        startWakeAndConnect(to: machine, password: password)
+    }
+
+    private func wakeAndConnect(to machine: SavedMachine) {
+        startWakeAndConnect(to: machine, password: store.password(for: machine))
+    }
+
+    private func startWakeAndConnect(to machine: SavedMachine, password: String) {
+        guard let macAddress = machine.wakeOnLANAddress else {
+            presentSession(for: machine, password: password)
+            return
+        }
+
+        guard wakingMachineID != machine.id else {
+            AppLog.wakeOnLAN.debug("Ignored duplicate wake request for machine id=\(machine.id.uuidString, privacy: .public)")
+            return
+        }
+
+        cancelWakeAttempt(logCancellation: false)
+
+        let requestID = UUID()
+        wakeRequestID = requestID
+        wakingMachineID = machine.id
+        AppLog.wakeOnLAN.info("Starting wake-and-connect for '\(machine.displayName, privacy: .public)'; id=\(machine.id.uuidString, privacy: .public)")
+
+        wakeTask = Task { @MainActor in
+            await performWakeAndConnect(to: machine,
+                                        password: password,
+                                        macAddress: macAddress,
+                                        requestID: requestID)
+        }
+    }
+
+    @MainActor
+    private func performWakeAndConnect(to machine: SavedMachine,
+                                       password: String,
+                                       macAddress: MACAddress,
+                                       requestID: UUID) async {
+        defer {
+            finishWakeAttempt(requestID: requestID)
+        }
+
+        do {
+            try await wakeOnLANSender.sendMagicPacket(to: macAddress)
+        } catch is CancellationError {
+            return
+        } catch {
+            AppLog.wakeOnLAN.error("Wake-on-LAN send failed for id=\(machine.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            showWakeFailure("\(error.localizedDescription) Check that Local Network access is enabled and try again.")
+            return
+        }
+
+        for attempt in 1...wakeReachabilityAttemptCount {
+            guard !Task.isCancelled,
+                  wakeRequestID == requestID else {
+                return
+            }
+
+            if attempt > 1 {
+                do {
+                    try await Task.sleep(for: wakeReachabilityPollInterval)
+                } catch {
+                    return
+                }
+            }
+
+            let status = await MachineReachabilityProber.status(host: machine.host,
+                                                                 port: machine.port,
+                                                                 timeout: .seconds(1))
+            machineReachabilityStatuses[machine.id] = status
+            AppLog.wakeOnLAN.debug("Wake reachability probe completed; id=\(machine.id.uuidString, privacy: .public) attempt=\(attempt, privacy: .public) status=\(status.title, privacy: .public)")
+
+            guard status == .reachable else { continue }
+            guard store.contains(machine) else {
+                AppLog.wakeOnLAN.info("Stopped wake-and-connect because machine was removed; id=\(machine.id.uuidString, privacy: .public)")
+                return
+            }
+
+            AppLog.wakeOnLAN.info("Machine became reachable after Wake-on-LAN; id=\(machine.id.uuidString, privacy: .public) attempt=\(attempt, privacy: .public)")
+            presentSession(for: machine, password: password)
+            return
+        }
+
+        AppLog.wakeOnLAN.warning("Machine did not become reachable after Wake-on-LAN; id=\(machine.id.uuidString, privacy: .public) attempts=\(self.wakeReachabilityAttemptCount, privacy: .public)")
+        showWakeFailure("The wake packet was sent, but \(machine.displayName) did not become reachable within one minute. Check that “Wake for network access” is enabled and that both devices are on the same local network.")
+    }
+
+    private func finishWakeAttempt(requestID: UUID) {
+        guard wakeRequestID == requestID else { return }
+        wakeTask = nil
+        wakeRequestID = nil
+        wakingMachineID = nil
+    }
+
+    private func cancelWakeAttempt() {
+        cancelWakeAttempt(logCancellation: true)
+    }
+
+    private func cancelWakeAttempt(logCancellation: Bool) {
+        guard wakeTask != nil || wakingMachineID != nil else { return }
+
+        if logCancellation, let wakingMachineID {
+            AppLog.wakeOnLAN.info("Cancelled wake-and-connect; id=\(wakingMachineID.uuidString, privacy: .public)")
+        }
+
+        wakeTask?.cancel()
+        wakeTask = nil
+        wakeRequestID = nil
+        wakingMachineID = nil
+    }
+
+    private func showWakeFailure(_ message: String) {
+        wakeFailureMessage = message
+        isWakeFailurePresented = true
+    }
+
     // MARK: - Reachability
 
     private func reachabilityStatus(for machine: SavedMachine) -> MachineReachabilityStatus {
-        machineReachabilityStatuses[machine.id] ?? .checking
+        if wakingMachineID == machine.id {
+            return .waking
+        }
+
+        return machineReachabilityStatuses[machine.id] ?? .checking
     }
 
     @MainActor

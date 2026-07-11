@@ -8,6 +8,7 @@ final class SavedMachineRecord {
     var host: String = ""
     var port: Int = 5900
     var username: String = ""
+    var macAddress: String?
     @Attribute(.allowsCloudEncryption) var password: String?
     var createdAt: Date = Date.now
     var updatedAt: Date = Date.now
@@ -20,6 +21,7 @@ final class SavedMachineRecord {
          host: String = "",
          port: Int = 5900,
          username: String = "",
+         macAddress: String? = nil,
          password: String? = nil,
          createdAt: Date = .now,
          updatedAt: Date = .now,
@@ -31,6 +33,7 @@ final class SavedMachineRecord {
         self.host = host
         self.port = port
         self.username = username
+        self.macAddress = macAddress
         self.password = password
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -45,6 +48,7 @@ final class SavedMachineRecord {
                   host: machine.host,
                   port: Int(machine.port),
                   username: machine.username,
+                  macAddress: machine.macAddress,
                   password: password,
                   lastConnectedAt: machine.lastConnectedAt,
                   sortOrder: sortOrder)
@@ -56,6 +60,7 @@ final class SavedMachineRecord {
                      host: host,
                      port: UInt16(clamping: port),
                      username: username,
+                     macAddress: macAddress,
                      lastConnectedAt: lastConnectedAt)
     }
 
@@ -64,6 +69,7 @@ final class SavedMachineRecord {
         host = machine.host
         port = Int(machine.port)
         username = machine.username
+        macAddress = machine.macAddress
         lastConnectedAt = machine.lastConnectedAt ?? lastConnectedAt
         updatedAt = .now
 

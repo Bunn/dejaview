@@ -13,6 +13,7 @@ struct EditMachineView<Store: MachineStoring>: View {
     @State private var username: String
     @State private var password: String
     @State private var portText: String
+    @State private var macAddress: String
 
     private let isNew: Bool
 
@@ -29,10 +30,16 @@ struct EditMachineView<Store: MachineStoring>: View {
         _username = State(initialValue: machine.username)
         _password = State(initialValue: password)
         _portText = State(initialValue: String(machine.port))
+        _macAddress = State(initialValue: machine.macAddress ?? "")
     }
 
     private var canSubmit: Bool {
-        !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isMACAddressValid
+    }
+
+    private var isMACAddressValid: Bool {
+        let value = macAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty || MACAddress(value) != nil
     }
 
     var body: some View {
@@ -54,6 +61,25 @@ struct EditMachineView<Store: MachineStoring>: View {
                     CredentialTextField("Username (macOS login)", text: $username)
 
                     CredentialTextField("Password", text: $password, isSecure: true)
+                }
+
+                Section {
+                    TextField("MAC Address (optional)", text: $macAddress)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                        .keyboardType(.asciiCapable)
+                        .textContentType(.none)
+
+                    if !isMACAddressValid {
+                        Label("Enter six hexadecimal pairs, such as A1:B2:C3:D4:E5:F6.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("Wake on LAN")
+                } footer: {
+                    Text("When this Mac is unreachable, Glassy View can wake it and connect automatically. Enable “Wake for network access” in macOS System Settings.")
                 }
 
                 if isNew, connectAfterDismiss != nil {
@@ -138,6 +164,11 @@ struct EditMachineView<Store: MachineStoring>: View {
         prepared.host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         prepared.port = UInt16(portText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 5900
         prepared.username = username.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let trimmedMACAddress = macAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        prepared.macAddress = trimmedMACAddress.isEmpty
+            ? nil
+            : MACAddress(trimmedMACAddress)?.formatted
 
         if prepared.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             prepared.name = prepared.host

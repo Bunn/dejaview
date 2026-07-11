@@ -8,6 +8,8 @@ struct FAQView: View {
                         answer: "Check that Screen Sharing or Remote Management is enabled on the Mac, both devices are on the same network or VPN, Local Network permission is allowed for Glassy View, and the Mac is awake. Some networks block Bonjour discovery, so adding the host manually can still work."),
         SettingsFAQItem(question: "What host and port should I use?",
                         answer: "Use the Mac's local hostname, IP address, or DNS name. macOS Screen Sharing normally listens on port 5900."),
+        SettingsFAQItem(question: "How do I use Wake-on-LAN?",
+                        answer: "Edit a saved Mac and enter the MAC address of its network interface. Also enable Wake for network access in macOS System Settings. If the Mac is unreachable, tapping its card sends a wake packet and waits up to a minute before connecting. Wake-on-LAN normally requires the devices to be on the same local network or a VPN that forwards broadcasts."),
         SettingsFAQItem(question: "Which credentials should I enter?",
                         answer: "Use the username and password for a Mac account that is allowed to share the screen. If the server uses legacy password-only VNC authentication, leave the username blank and enter the VNC password.")
     ]

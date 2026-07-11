@@ -6,6 +6,7 @@ struct AppDependencies<Session: RemoteSessionControlling,
     let makeBrowser: () -> Browser
     let makeStore: () -> Store
     let makeIntentRouter: () -> Router
+    let wakeOnLANSender: any WakeOnLANSending
 }
 
 extension AppDependencies where Session == VNCSession,
@@ -19,6 +20,7 @@ extension AppDependencies where Session == VNCSession,
         return AppDependencies(makeSession: VNCSession.init,
                                makeBrowser: BonjourBrowser.init,
                                makeStore: { MachineStore(repository: SwiftDataSavedMachineRepository.shared) },
-                               makeIntentRouter: { intentRouter })
+                               makeIntentRouter: { intentRouter },
+                               wakeOnLANSender: WakeOnLANService())
     }
 }

@@ -3,7 +3,10 @@ import SwiftUI
 struct SavedMachineTile: View {
     let machine: SavedMachine
     let reachabilityStatus: MachineReachabilityStatus
+    let isWaking: Bool
     let connect: () -> Void
+    let wakeAndConnect: (() -> Void)?
+    let cancelWake: () -> Void
     let edit: () -> Void
     let delete: () -> Void
 
@@ -34,15 +37,22 @@ struct SavedMachineTile: View {
 
                     Spacer(minLength: 8)
 
-                    Image(systemName: "play.circle.fill")
-                        .font(.title3)
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(.tint)
+                    if isWaking {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 24, height: 24)
+                    } else {
+                        Image(systemName: "play.circle.fill")
+                            .font(.title3)
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.tint)
+                    }
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityHint("Connects to this saved machine.")
+            .disabled(isWaking)
+            .accessibilityHint(primaryActionAccessibilityHint)
 
             Menu {
                 machineActions
@@ -66,8 +76,24 @@ struct SavedMachineTile: View {
 
     @ViewBuilder
     private var machineActions: some View {
+        if isWaking {
+            Button("Cancel Wake Attempt", systemImage: "xmark.circle", action: cancelWake)
+        } else if let wakeAndConnect {
+            Button("Wake and Connect", systemImage: "power", action: wakeAndConnect)
+        }
+
         Button("Edit", systemImage: "slider.horizontal.3", action: edit)
 
         Button("Delete", systemImage: "trash", role: .destructive, action: delete)
+    }
+
+    private var primaryActionAccessibilityHint: String {
+        if isWaking {
+            "Waiting for this Mac to wake."
+        } else if wakeAndConnect != nil && reachabilityStatus != .reachable {
+            "Wakes this Mac if needed, then connects."
+        } else {
+            "Connects to this saved machine."
+        }
     }
 }

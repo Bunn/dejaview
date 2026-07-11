@@ -8,6 +8,7 @@ struct SavedMachine: Identifiable, Codable, Equatable {
     var host: String
     var port: UInt16 = 5900
     var username: String
+    var macAddress: String?
     var lastConnectedAt: Date?
 
     var displayName: String {
@@ -17,5 +18,10 @@ struct SavedMachine: Identifiable, Codable, Equatable {
     var subtitle: String {
         let hostPort = "\(host):\(String(port))"
         return username.isEmpty ? hostPort : "\(username)@\(hostPort)"
+    }
+
+    var wakeOnLANAddress: MACAddress? {
+        guard let macAddress else { return nil }
+        return MACAddress(macAddress)
     }
 }

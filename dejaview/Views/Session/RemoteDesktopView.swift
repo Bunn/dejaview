@@ -29,11 +29,17 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
     @Binding var zoomScale: CGFloat
     var followsCursor: Bool
     var acceptsHardwareKeyboardInput: Bool
+    var acceptsPointerInput: Bool = true
+    var showsFramebuffer: Bool = true
+    var touchModeOverride: RemoteTouchMode?
 
     func makeUIView(context: Context) -> ScreenView {
         let view = ScreenView()
         view.session = session
         view.setAcceptsHardwareKeyboardInput(acceptsHardwareKeyboardInput)
+        view.setAcceptsPointerInput(acceptsPointerInput)
+        view.setShowsFramebuffer(showsFramebuffer)
+        view.setTouchModeOverride(touchModeOverride)
         view.onZoomScaleChanged = context.coordinator.setZoomScale(_:)
         view.setVisibleFramebufferFrame(selectedFramebufferFrame)
         view.setPreferredFrameRate(session.preferredFrameRate)
@@ -62,6 +68,9 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         uiView.setFollowsCursor(followsCursor)
         uiView.setPreferredFrameRate(session.preferredFrameRate)
         uiView.setAcceptsHardwareKeyboardInput(acceptsHardwareKeyboardInput)
+        uiView.setAcceptsPointerInput(acceptsPointerInput)
+        uiView.setShowsFramebuffer(showsFramebuffer)
+        uiView.setTouchModeOverride(touchModeOverride)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -99,6 +108,8 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         private var framebufferRenderInterval = RemoteFrameRate.balanced.updateInterval
         private var keyboardFocusTask: Task<Void, Never>?
         private var acceptsHardwareKeyboardInput = true
+        private var showsFramebuffer = true
+        private var touchModeOverride: RemoteTouchMode?
 
         private var zoomScale: CGFloat = 1
         private var followsCursor = true
@@ -250,6 +261,23 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                     resignFirstResponder()
                 }
             }
+        }
+
+        func setAcceptsPointerInput(_ accepts: Bool) {
+            isUserInteractionEnabled = accepts
+        }
+
+        func setShowsFramebuffer(_ showsFramebuffer: Bool) {
+            guard self.showsFramebuffer != showsFramebuffer else { return }
+
+            self.showsFramebuffer = showsFramebuffer
+            backgroundColor = showsFramebuffer ? .black : .clear
+            framebufferView.isHidden = !showsFramebuffer
+            updateCursorLayerFrame()
+        }
+
+        func setTouchModeOverride(_ touchMode: RemoteTouchMode?) {
+            touchModeOverride = touchMode
         }
 
         private func requestKeyboardFocus() {
@@ -780,7 +808,8 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         }
 
         private func updateCursorLayerFrame() {
-            guard let remoteCursor,
+            guard showsFramebuffer,
+                  let remoteCursor,
                   let localCursor = localCursorLocation(),
                   remoteCursor.size.width > 0,
                   remoteCursor.size.height > 0,
@@ -867,7 +896,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
             becomeFirstResponderIfAppropriate()
 
-            switch session.touchMode {
+            switch effectiveTouchMode {
             case .trackpad:
                 if usesPointerLocation,
                    let point = framebufferPoint(for: gesture.location(in: self)) {
@@ -981,7 +1010,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         }
 
         override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-            guard let touch = touches.first, let session else { return }
+            guard let touch = touches.first, session != nil else { return }
 
             becomeFirstResponderIfAppropriate()
 
@@ -994,7 +1023,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
             let location = touch.location(in: self)
 
-            switch session.touchMode {
+            switch effectiveTouchMode {
             case .trackpad:
                 lastTouchLocation = location
                 touchStartTime = touch.timestamp
@@ -1071,7 +1100,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
 
             let location = touch.location(in: self)
 
-            switch session.touchMode {
+            switch effectiveTouchMode {
             case .trackpad:
                 let delta = CGPoint(x: location.x - lastTouchLocation.x,
                                     y: location.y - lastTouchLocation.y)
@@ -1117,7 +1146,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                 return
             }
 
-            switch session.touchMode {
+            switch effectiveTouchMode {
             case .trackpad:
                 cancelLongPress()
 
@@ -1162,6 +1191,10 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
             }
 
             if activeTouchCount(event) == 0 { multiTouchActive = false }
+        }
+
+        private var effectiveTouchMode: RemoteTouchMode {
+            touchModeOverride ?? session?.touchMode ?? .direct
         }
 
         private func enterMultiTouch() {

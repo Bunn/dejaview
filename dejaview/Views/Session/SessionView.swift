@@ -5,6 +5,7 @@ import OSLog
 struct SessionView<Session: RemoteSessionControlling>: View {
     @ObservedObject var session: Session
     @Binding private var preferences: SessionPreferences
+    let sessionTitle: String
     @Environment(SubscriptionStore.self) private var subscriptionStore
     @Environment(\.dismiss) private var dismiss
 
@@ -20,13 +21,17 @@ struct SessionView<Session: RemoteSessionControlling>: View {
     @State private var streamZoomScale: CGFloat = 1
     @State private var followsCursorWhenZoomed = true
     @State private var networkPathObserver = NetworkPathObserver()
+    @State private var externalDisplayCoordinator = ExternalDisplayCoordinator.shared
     @FocusState private var inputFocused: Bool
 
     private let freeSessionDurationInterval: TimeInterval = 120
 
-    init(session: Session, preferences: Binding<SessionPreferences>) {
+    init(session: Session,
+         preferences: Binding<SessionPreferences>,
+         sessionTitle: String) {
         self.session = session
         _preferences = preferences
+        self.sessionTitle = sessionTitle
 
         let preferences = preferences.wrappedValue.normalized
         _streamZoomScale = State(initialValue: CGFloat(preferences.zoomScale))
@@ -53,12 +58,12 @@ struct SessionView<Session: RemoteSessionControlling>: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if showsInputBar && session.status == .connected {
+            if showsInputBar && session.status == .connected && !isExternalControllerActive {
                 inputBar
             }
         }
         .overlay(alignment: .bottomLeading) {
-            if session.status == .connected && !showsInputBar {
+            if session.status == .connected && !showsInputBar && !isExternalControllerActive {
                 SessionZoomControls(zoomScale: $streamZoomScale,
                                     followsCursor: $followsCursorWhenZoomed)
                     .padding(.bottom, 28)
@@ -72,7 +77,9 @@ struct SessionView<Session: RemoteSessionControlling>: View {
                         SessionDisplayMenu(session: session)
                     }
 
-                    SessionOptionsMenu(session: session)
+                    SessionOptionsMenu(session: session,
+                                       sessionTitle: sessionTitle,
+                                       externalDisplayCoordinator: externalDisplayCoordinator)
                 }
                 .padding(.bottom, 28)
                 .padding(.trailing, 20)
@@ -96,6 +103,7 @@ struct SessionView<Session: RemoteSessionControlling>: View {
         }
         .onDisappear {
             networkPathObserver.stop()
+            deactivateExternalControllerIfNeeded()
         }
         .onChange(of: networkPathObserver.snapshot?.status, initial: true) { _, pathStatus in
             guard let pathStatus else { return }
@@ -105,6 +113,10 @@ struct SessionView<Session: RemoteSessionControlling>: View {
             logDisplayControlState(reason: "statusChanged")
             if session.status != .connected {
                 releaseHeldModifierKeys()
+            }
+
+            if case .disconnected = session.status {
+                deactivateExternalControllerIfNeeded()
             }
         }
         .onChange(of: session.displays) { _, _ in
@@ -169,11 +181,18 @@ struct SessionView<Session: RemoteSessionControlling>: View {
             }
 
         case .connected:
-            SessionRemoteContent(session: session,
-                                 reconnectState: nil,
-                                 zoomScale: $streamZoomScale,
-                                 followsCursor: followsCursorWhenZoomed,
-                                 acceptsHardwareKeyboardInput: acceptsRemoteHardwareKeyboardInput)
+            if isExternalControllerActive {
+                ExternalSessionControllerView(session: session,
+                                              sessionTitle: sessionTitle,
+                                              heldModifierKeys: $heldModifierKeys,
+                                              stopControllerMode: deactivateExternalControllerIfNeeded)
+            } else {
+                SessionRemoteContent(session: session,
+                                     reconnectState: nil,
+                                     zoomScale: $streamZoomScale,
+                                     followsCursor: followsCursorWhenZoomed,
+                                     acceptsHardwareKeyboardInput: acceptsRemoteHardwareKeyboardInput)
+            }
 
         case .reconnecting(let reconnectState):
             SessionRemoteContent(session: session,
@@ -221,24 +240,17 @@ struct SessionView<Session: RemoteSessionControlling>: View {
 
     private var controlPill: some View {
         HStack(spacing: 2) {
-            Button {
-                toggleInputBar()
-            } label: {
-                Image(systemName: "keyboard")
+            if !isExternalControllerActive {
+                Button("Toggle Software Keyboard", systemImage: "keyboard", action: toggleInputBar)
+                    .labelStyle(.iconOnly)
                     .padding(12)
                     .contentShape(Rectangle())
             }
 
-            Button {
-                AppLog.ui.info("Session close button tapped")
-                releaseHeldModifierKeys()
-                session.disconnect()
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .padding(12)
-                    .contentShape(Rectangle())
-            }
+            Button("Close Session", systemImage: "xmark", action: closeSession)
+                .labelStyle(.iconOnly)
+                .padding(12)
+                .contentShape(Rectangle())
         }
         .font(.body.weight(.medium))
         .foregroundStyle(.white)
@@ -274,6 +286,11 @@ struct SessionView<Session: RemoteSessionControlling>: View {
             && !showsInputBar
             && !isSessionPaywallPresented
             && !isFreeSessionTimerInfoPresented
+    }
+
+    private var isExternalControllerActive: Bool {
+        guard let vncSession = session as? VNCSession else { return false }
+        return externalDisplayCoordinator.isControllerModeEnabled(for: vncSession)
     }
 
     private func logDisplayControlState(reason: String) {
@@ -406,6 +423,19 @@ struct SessionView<Session: RemoteSessionControlling>: View {
 
         AppLog.ui.info("Software input bar visibility changed; visible=\(self.showsInputBar, privacy: .public)")
         inputFocused = showsInputBar
+    }
+
+    private func closeSession() {
+        AppLog.ui.info("Session close button tapped")
+        releaseHeldModifierKeys()
+        deactivateExternalControllerIfNeeded()
+        session.disconnect()
+        dismiss()
+    }
+
+    private func deactivateExternalControllerIfNeeded() {
+        guard let vncSession = session as? VNCSession else { return }
+        externalDisplayCoordinator.deactivate(session: vncSession)
     }
 
     private func releaseHeldModifierKeys() {

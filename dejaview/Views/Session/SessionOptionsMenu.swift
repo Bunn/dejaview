@@ -6,6 +6,8 @@ struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
     // RemoteSessionControlling.framebufferUpdatePublisher), so this only re-renders on
     // actual state changes — which the menu checkmarks need to reflect.
     @ObservedObject var session: Session
+    let sessionTitle: String
+    @Bindable var externalDisplayCoordinator: ExternalDisplayCoordinator
 
     var body: some View {
         Menu {
@@ -34,6 +36,14 @@ struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
             }
             .pickerStyle(.inline)
 
+            if let vncSession = session as? VNCSession {
+                Section("External Display") {
+                    ExternalDisplayControllerToggle(session: vncSession,
+                                                    sessionTitle: sessionTitle,
+                                                    coordinator: externalDisplayCoordinator)
+                }
+            }
+
 #if DEBUG
             Section("Debug") {
                 Button("Test Automatic Reconnect",
@@ -52,7 +62,7 @@ struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
         .foregroundStyle(.white)
         .padding(5)
         .liquidGlass(in: Circle())
-        .accessibilityHint("Shows quality, frame rate, trackpad, and clipboard options.")
+        .accessibilityHint("Shows display, frame rate, trackpad, and clipboard options.")
     }
 
     private var qualityBinding: Binding<RemoteSessionQuality> {

@@ -66,7 +66,9 @@ struct ContentView<Session: RemoteSessionControlling,
         }
         .navigationSplitViewStyle(.balanced)
         .fullScreenCover(isPresented: $isSessionPresented, onDismiss: handleSessionDismissed) {
-            SessionView(session: session, preferences: $sessionPreferences)
+            SessionView(session: session,
+                        preferences: $sessionPreferences,
+                        sessionTitle: sessionMachine?.displayName ?? "Remote Mac")
         }
         .fullScreenCover(isPresented: $isOnboardingPresented) {
             NavigationStack {

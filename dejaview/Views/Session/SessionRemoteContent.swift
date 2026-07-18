@@ -6,6 +6,7 @@ struct SessionRemoteContent<Session: RemoteSessionControlling>: View {
     @Binding var zoomScale: CGFloat
     let followsCursor: Bool
     let acceptsHardwareKeyboardInput: Bool
+    var acceptsPointerInput: Bool = true
 
     var body: some View {
         ZStack {
@@ -13,7 +14,8 @@ struct SessionRemoteContent<Session: RemoteSessionControlling>: View {
                               selectedFramebufferFrame: session.selectedDisplayFrame,
                               zoomScale: $zoomScale,
                               followsCursor: followsCursor,
-                              acceptsHardwareKeyboardInput: acceptsHardwareKeyboardInput)
+                              acceptsHardwareKeyboardInput: acceptsHardwareKeyboardInput,
+                              acceptsPointerInput: acceptsPointerInput)
                 .id(session.displaySelection.id)
                 .ignoresSafeArea()
 

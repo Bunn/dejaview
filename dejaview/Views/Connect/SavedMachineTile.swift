@@ -10,6 +10,8 @@ struct SavedMachineTile: View {
     let edit: () -> Void
     let delete: () -> Void
 
+    @State private var isMachineOptionsPresented = false
+
     var body: some View {
         HStack(spacing: 12) {
             Button(action: connect) {
@@ -54,24 +56,24 @@ struct SavedMachineTile: View {
             .disabled(isWaking)
             .accessibilityHint(primaryActionAccessibilityHint)
 
-            Menu {
-                machineActions
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.title3)
-                    .symbolRenderingMode(.hierarchical)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Circle())
-            }
+            Button("Machine Options",
+                   systemImage: "ellipsis.circle",
+                   action: showMachineOptions)
+            .labelStyle(.iconOnly)
+            .font(.title3)
+            .symbolRenderingMode(.hierarchical)
+            .frame(width: 44, height: 44)
+            .contentShape(Circle())
             .buttonStyle(.plain)
-            .accessibilityLabel("Machine Options")
+            .confirmationDialog("Machine Options",
+                                isPresented: $isMachineOptionsPresented,
+                                titleVisibility: .hidden) {
+                machineActions
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
         .glassPanel(cornerRadius: 24, isInteractive: true)
-        .contextMenu {
-            machineActions
-        }
     }
 
     @ViewBuilder
@@ -85,6 +87,10 @@ struct SavedMachineTile: View {
         Button("Edit", systemImage: "slider.horizontal.3", action: edit)
 
         Button("Delete", systemImage: "trash", role: .destructive, action: delete)
+    }
+
+    private func showMachineOptions() {
+        isMachineOptionsPresented = true
     }
 
     private var primaryActionAccessibilityHint: String {

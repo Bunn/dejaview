@@ -107,6 +107,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         private var lastFramebufferFlushTime: TimeInterval = 0
         private var framebufferRenderInterval = RemoteFrameRate.balanced.updateInterval
         private var keyboardFocusTask: Task<Void, Never>?
+        private let hardwareKeyboardInputView = UIView(frame: .zero)
         private var acceptsHardwareKeyboardInput = true
         private var showsFramebuffer = true
         private var touchModeOverride: RemoteTouchMode?
@@ -227,6 +228,13 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
             true
         }
 
+        /// This responder handles physical keyboard presses only. Returning an
+        /// empty input view prevents UIKit from presenting the software
+        /// keyboard when focus is restored around menus and other windows.
+        override var inputView: UIView? {
+            hardwareKeyboardInputView
+        }
+
         /// Grabs keyboard focus for hardware-keyboard forwarding — but only
         /// while our window is key. Stealing first responder while another
         /// window is presenting (e.g. the session options menu, which iOS 26
@@ -244,10 +252,7 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         }
 
         func setAcceptsHardwareKeyboardInput(_ accepts: Bool) {
-            guard acceptsHardwareKeyboardInput != accepts else {
-                if accepts { requestKeyboardFocus() }
-                return
-            }
+            guard acceptsHardwareKeyboardInput != accepts else { return }
 
             acceptsHardwareKeyboardInput = accepts
 
@@ -368,9 +373,11 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
         //
         // While another window is key (e.g. the session options menu, which
         // iOS 26 hosts in its own window), holding first responder makes the
-        // input system track keyboard geometry across both windows, spamming
-        // "Invalid UIScreen coordinate space conversion". Let go of keyboard
-        // focus while we're not the key window and re-grab it afterwards.
+        // input system track keyboard geometry across both windows. Let go of
+        // keyboard focus when our window resigns key. Do not automatically
+        // reclaim it on didBecomeKey: menu presentation can briefly make this
+        // window key again while the menu is still visible, which summons the
+        // software keyboard. Direct remote interaction reclaims focus instead.
 
         private final class NotificationObserver: @unchecked Sendable {
             private let token: NSObjectProtocol
@@ -399,16 +406,9 @@ struct RemoteDesktopView<Session: RemoteSessionControlling>: UIViewRepresentable
                                        object: window,
                                        queue: .main) { [weak self] _ in
                         MainActor.assumeIsolated {
+                            self?.keyboardFocusTask?.cancel()
+                            self?.keyboardFocusTask = nil
                             _ = self?.resignFirstResponder()
-                        }
-                    }
-                ),
-                NotificationObserver(
-                    center.addObserver(forName: UIWindow.didBecomeKeyNotification,
-                                       object: window,
-                                       queue: .main) { [weak self] _ in
-                        MainActor.assumeIsolated {
-                            self?.requestKeyboardFocus()
                         }
                     }
                 )

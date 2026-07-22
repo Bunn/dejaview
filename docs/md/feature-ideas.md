@@ -1,6 +1,6 @@
 # Feature Ideas
 
-Grounded in the current codebase (Bonjour discovery, SwiftData-backed saved machines and history, App Intents, zoom/trackpad/clipboard session controls, hardware keyboard forwarding). Complements `wwdc-2026-feature-ideas.md`, where the Shortcuts (#1) and SwiftData (#8) items are already implemented.
+Grounded in the current codebase (Bonjour discovery, SwiftData-backed saved machines and history, App Intents, zoom/trackpad session controls, hardware keyboard forwarding). Complements `wwdc-2026-feature-ideas.md`, where the Shortcuts (#1) and SwiftData (#8) items are already implemented.
 
 ## Session quality of life
 

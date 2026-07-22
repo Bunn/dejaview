@@ -85,7 +85,7 @@ enum OnboardingPage: Int, CaseIterable, Identifiable {
                                  detail: "Use a Mac account that is allowed to share the screen. Legacy VNC servers may only need a password."),
                 OnboardingBullet(systemImage: "slider.horizontal.3",
                                  title: "Tune each session",
-                                 detail: "Session controls include display selection, zoom, trackpad mode, and clipboard sync.")
+                                 detail: "Session controls include display selection, zoom, trackpad mode, and frame rate.")
             ]
         case .supported:
             [

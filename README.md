@@ -18,7 +18,7 @@ On the target Mac: System Settings → General → Sharing → enable **Screen S
 - **Rendering**: full-screen framebuffer drawn into a `CALayer` (aspect-fit), status bar and home indicator hidden.
 - **Input**: tap = left click, drag = click-drag; a floating glass pill toggles a keystroke bar and disconnects.
 - **Liquid Glass** styling using iOS 26-native `glassEffect`, `.glass`/`.glassProminent` buttons, and morphing glass controls.
-- **Options menu**: bottom-right glass button that morphs open (`GlassEffectContainer` + `glassEffectID`) with quality presets (24/16-bit color — no 8-bit, macOS's server resets those sessions) and clipboard sync. Settings are immutable per connection, so changes briefly reconnect (with a 2s grace period).
+- **Options menu**: bottom-right glass button with quality, frame-rate, trackpad-mode, and external-display controls. Quality settings are immutable per connection, so changes briefly reconnect (with a 2s grace period).
 - **Saved machines**: one-tap connect entries with editable name/host/port/login (`MachineStore`). Metadata, encrypted passwords, and connection history are stored in SwiftData with private CloudKit sync; passwords are also cached locally in the Keychain.
 
 ## Notes & next steps
@@ -26,5 +26,5 @@ On the target Mac: System Settings → General → Sharing → enable **Screen S
 - First connection triggers iOS's Local Network permission prompt (keys are in `Support/Info.plist`, merged with the generated Info.plist).
 - The API usage follows RoyalVNC's `USAGE.md` on `main`. If the branch API drifts, pin the package to a release tag in the project's Package Dependencies.
 - Performance: the whole framebuffer image is republished on every update. For production, render only the dirty rect passed to `didUpdateFramebuffer`.
-- Not implemented yet: right-click (try a long-press gesture → `.right` button), scroll wheel, pinch-to-zoom, modifier keys, clipboard UI, remote cursor rendering, and a user-facing recents view.
+- Not implemented yet: right-click (try a long-press gesture → `.right` button), scroll wheel, pinch-to-zoom, modifier keys, remote cursor rendering, and a user-facing recents view.
 - macOS Sonoma+ "high-performance" screen sharing is a separate proprietary protocol; third-party clients use the classic VNC path (this is fine — macOS still serves it).

@@ -1,3 +1,4 @@
+import RoyalVNCKit
 import SwiftUI
 
 struct ExternalSessionControllerView<Session: RemoteSessionControlling>: View {
@@ -8,9 +9,8 @@ struct ExternalSessionControllerView<Session: RemoteSessionControlling>: View {
     @Binding var heldModifierKeys: Set<RemoteModifierKey>
     let stopControllerMode: () -> Void
 
-    @State private var textToSend = ""
+    @State private var keyboardFocusRequest = 0
     @State private var trackpadZoomScale: CGFloat = 1
-    @FocusState private var inputFocused: Bool
 
     var body: some View {
         VStack(spacing: 14) {
@@ -25,10 +25,8 @@ struct ExternalSessionControllerView<Session: RemoteSessionControlling>: View {
             if verticalSizeClass != .compact {
                 SessionShortcutStrip(session: session,
                                      heldModifierKeys: $heldModifierKeys,
-                                     onSend: focusInput)
+                                     onSend: requestKeyboardFocus)
             }
-
-            inputBar
         }
         .padding(.horizontal, 16)
         .padding(.top, verticalSizeClass == .compact ? 56 : 74)
@@ -39,9 +37,17 @@ struct ExternalSessionControllerView<Session: RemoteSessionControlling>: View {
                            endPoint: .bottom)
                 .ignoresSafeArea()
         }
+        .overlay(alignment: .bottom) {
+            RemoteSoftwareKeyboardInput(focusRequest: keyboardFocusRequest,
+                                        onInsertText: sendText,
+                                        onDeleteBackward: deleteBackward,
+                                        onReturn: sendReturn)
+                .frame(width: 1, height: 1)
+                .accessibilityHidden(true)
+        }
         .task {
             await Task.yield()
-            inputFocused = true
+            requestKeyboardFocus()
         }
     }
 
@@ -120,40 +126,20 @@ struct ExternalSessionControllerView<Session: RemoteSessionControlling>: View {
         .accessibilityHint("Move with one finger, scroll with two fingers, or tap with two fingers to right-click.")
     }
 
-    private var inputBar: some View {
-        HStack(spacing: 10) {
-            TextField("Type to send to the Mac…", text: $textToSend)
-                .textFieldStyle(.plain)
-                .focused($inputFocused)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .onSubmit(sendText)
-
-            Button("Send Return", systemImage: "return", action: sendReturn)
-                .labelStyle(.iconOnly)
-                .font(.body.weight(.medium))
-                .frame(minWidth: 44, minHeight: 44)
-        }
-        .padding(.leading, 18)
-        .padding(.trailing, 8)
-        .padding(.vertical, 6)
-        .liquidGlass(in: Capsule())
-    }
-
-    private func sendText() {
-        guard !textToSend.isEmpty else { return }
-
-        session.sendText(textToSend)
-        textToSend = ""
-        focusInput()
+    private func sendText(_ text: String) {
+        guard !text.isEmpty else { return }
+        session.sendText(text)
     }
 
     private func sendReturn() {
         session.sendReturn()
-        focusInput()
     }
 
-    private func focusInput() {
-        inputFocused = true
+    private func deleteBackward() {
+        session.sendKey(.delete)
+    }
+
+    private func requestKeyboardFocus() {
+        keyboardFocusRequest += 1
     }
 }

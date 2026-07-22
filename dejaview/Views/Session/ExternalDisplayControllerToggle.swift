@@ -6,13 +6,12 @@ struct ExternalDisplayControllerToggle: View {
     @Bindable var coordinator: ExternalDisplayCoordinator
 
     var body: some View {
-        Toggle("Use This Device as Controller",
-               systemImage: "rectangle.inset.filled.and.person.filled",
-               isOn: controllerModeBinding)
-            .disabled(!coordinator.isExternalDisplayAvailable)
-
-        if !coordinator.isExternalDisplayAvailable {
-            Text("Connect an external display to make controller mode available.")
+        if coordinator.isExternalDisplayAvailable {
+            Toggle("Use as Controller",
+                   systemImage: "rectangle.inset.filled.and.person.filled",
+                   isOn: controllerModeBinding)
+        } else {
+            Text("Connect an external display first.")
         }
     }
 

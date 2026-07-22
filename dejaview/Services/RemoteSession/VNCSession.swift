@@ -12,7 +12,6 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     @Published var status: RemoteSessionStatus = .idle
     @Published private(set) var quality: RemoteSessionQuality = .best
     @Published private(set) var preferredFrameRate: RemoteFrameRate = .balanced
-    @Published private(set) var isClipboardSyncEnabled = false
     @Published private(set) var touchMode: RemoteTouchMode = .direct
     @Published private(set) var displays: [RemoteDisplay] = []
     @Published private(set) var displaySelection: RemoteDisplaySelection = .all
@@ -100,7 +99,7 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
     }
 
     private func startConnection(preservingStatus: Bool = false) {
-        AppLog.session.info("Connecting to VNC host \(self.host, privacy: .public):\(self.port, privacy: .public); usernameProvided=\(!self.username.isEmpty, privacy: .public); quality=\(self.quality.rawValue, privacy: .public); clipboard=\(self.isClipboardSyncEnabled, privacy: .public); frameRate=\(self.preferredFrameRate.rawValue, privacy: .public); automaticReconnectAttempt=\(self.automaticReconnectAttempt, privacy: .public)")
+        AppLog.session.info("Connecting to VNC host \(self.host, privacy: .public):\(self.port, privacy: .public); usernameProvided=\(!self.username.isEmpty, privacy: .public); quality=\(self.quality.rawValue, privacy: .public); frameRate=\(self.preferredFrameRate.rawValue, privacy: .public); automaticReconnectAttempt=\(self.automaticReconnectAttempt, privacy: .public)")
 
         let settings = VNCConnection.Settings(
             isDebugLoggingEnabled: false,
@@ -110,7 +109,7 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
             isScalingEnabled: true,
             useDisplayLink: true,
             inputMode: .forwardKeyboardShortcutsEvenIfInUseLocally,
-            isClipboardRedirectionEnabled: isClipboardSyncEnabled,
+            isClipboardRedirectionEnabled: false,
             colorDepth: .depth24Bit,
             frameEncodings: .default
         )
@@ -163,25 +162,19 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
 
     // MARK: - Live settings changes
     //
-    // `VNCConnection.Settings` is immutable, so changing quality or clipboard
-    // sync mid-session briefly reconnects with the new settings.
+    // `VNCConnection.Settings` is immutable, so changing quality mid-session
+    // briefly reconnects with the new settings.
 
     func applyPreferences(_ preferences: SessionPreferences) {
         let preferences = preferences.normalized
-        let clipboardChanged = isClipboardSyncEnabled != preferences.isClipboardSyncEnabled
 
         touchMode = preferences.touchMode
-        isClipboardSyncEnabled = preferences.isClipboardSyncEnabled
         displaySelection = displays.isEmpty
             ? preferences.displaySelection
             : normalizedDisplaySelection(preferences.displaySelection)
         setPreferredFrameRate(preferences.frameRate)
 
-        AppLog.session.info("Applied session preferences; touchMode=\(preferences.touchMode.rawValue, privacy: .public) clipboard=\(preferences.isClipboardSyncEnabled, privacy: .public) display=\(self.displaySelection.logDescription, privacy: .public) frameRate=\(preferences.frameRate.rawValue, privacy: .public)")
-
-        if clipboardChanged, status == .connected {
-            applySettingsChange()
-        }
+        AppLog.session.info("Applied session preferences; touchMode=\(preferences.touchMode.rawValue, privacy: .public) display=\(self.displaySelection.logDescription, privacy: .public) frameRate=\(preferences.frameRate.rawValue, privacy: .public)")
     }
 
     func setQuality(_ newQuality: RemoteSessionQuality) {
@@ -211,12 +204,6 @@ final class VNCSession: NSObject, ObservableObject, RemoteSessionControlling, @u
         clampCursorToSelectableBounds()
 
         AppLog.session.info("Display selection changed to \(self.displaySelection.logDescription, privacy: .public)")
-    }
-
-    func toggleClipboardSync() {
-        isClipboardSyncEnabled.toggle()
-        AppLog.session.info("Clipboard sync toggled; enabled=\(self.isClipboardSyncEnabled, privacy: .public)")
-        applySettingsChange()
     }
 
     private func applySettingsChange() {

@@ -24,9 +24,6 @@ struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
             Toggle("Trackpad Mode", systemImage: "cursorarrow.motionlines",
                    isOn: trackpadBinding)
 
-            Toggle("Clipboard Sync", systemImage: "doc.on.clipboard",
-                   isOn: clipboardBinding)
-
             Picker("Frame Rate", selection: frameRateBinding) {
                 ForEach(RemoteFrameRate.allCases) { frameRate in
                     Label("\(frameRate.title) (\(frameRate.rawValue) FPS)",
@@ -62,7 +59,7 @@ struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
         .foregroundStyle(.white)
         .padding(5)
         .liquidGlass(in: Circle())
-        .accessibilityHint("Shows display, frame rate, trackpad, and clipboard options.")
+        .accessibilityHint("Shows display, frame rate, and trackpad options.")
     }
 
     private var qualityBinding: Binding<RemoteSessionQuality> {
@@ -82,16 +79,6 @@ struct SessionOptionsMenu<Session: RemoteSessionControlling>: View {
         } set: { isOn in
             if (session.touchMode == .trackpad) != isOn {
                 session.toggleTouchMode()
-            }
-        }
-    }
-
-    private var clipboardBinding: Binding<Bool> {
-        Binding {
-            session.isClipboardSyncEnabled
-        } set: { isOn in
-            if session.isClipboardSyncEnabled != isOn {
-                session.toggleClipboardSync()
             }
         }
     }

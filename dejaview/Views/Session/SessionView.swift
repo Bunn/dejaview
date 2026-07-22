@@ -22,9 +22,9 @@ struct SessionView<Session: RemoteSessionControlling>: View {
     @State private var followsCursorWhenZoomed = true
     @State private var networkPathObserver = NetworkPathObserver()
     @State private var externalDisplayCoordinator = ExternalDisplayCoordinator.shared
-    @FocusState private var inputFocused: Bool
+    @State private var inputFocused = false
 
-    private let freeSessionDurationInterval: TimeInterval = 120
+    private let freeSessionDurationInterval: TimeInterval = 60
 
     init(session: Session,
          preferences: Binding<SessionPreferences>,
@@ -128,9 +128,6 @@ struct SessionView<Session: RemoteSessionControlling>: View {
         }
         .onChange(of: session.touchMode) { _, touchMode in
             updatePreference(\.touchMode, to: touchMode)
-        }
-        .onChange(of: session.isClipboardSyncEnabled) { _, isEnabled in
-            updatePreference(\.isClipboardSyncEnabled, to: isEnabled)
         }
         .onChange(of: session.preferredFrameRate) { _, frameRate in
             updatePreference(\.frameRate, to: frameRate)
@@ -453,32 +450,34 @@ struct SessionView<Session: RemoteSessionControlling>: View {
             }
 
             HStack(spacing: 10) {
-                TextField("Type to send to the Mac…", text: $textToSend)
-                    .textFieldStyle(.plain)
-                    .focused($inputFocused)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .onSubmit {
-                        AppLog.ui.debug("Software input submitted; characterCount=\(self.textToSend.count, privacy: .public)")
-                        session.sendText(textToSend)
-                        textToSend = ""
-                        inputFocused = true
-                    }
+                RemoteSessionTextField("Type to send to the Mac…",
+                                       text: $textToSend,
+                                       isFocused: $inputFocused,
+                                       onSubmit: submitSoftwareInput)
 
-                Button {
-                    AppLog.ui.debug("Software return key tapped")
-                    session.sendReturn()
-                    inputFocused = true
-                } label: {
-                    Image(systemName: "return")
-                        .fontWeight(.medium)
-                }
+                Button("Send Return", systemImage: "return", action: sendSoftwareReturn)
+                    .labelStyle(.iconOnly)
+                    .font(.body.weight(.medium))
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 14)
+            .fixedSize(horizontal: false, vertical: true)
             .liquidGlass(in: Capsule())
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 12)
+    }
+
+    private func submitSoftwareInput() {
+        AppLog.ui.debug("Software input submitted; characterCount=\(self.textToSend.count, privacy: .public)")
+        session.sendText(textToSend)
+        textToSend = ""
+        inputFocused = true
+    }
+
+    private func sendSoftwareReturn() {
+        AppLog.ui.debug("Software return key tapped")
+        session.sendReturn()
+        inputFocused = true
     }
 }

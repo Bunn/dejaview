@@ -26,6 +26,7 @@ struct ExternalRemoteDisplayView: View {
                 statusView(title: "Disconnected from \(sessionTitle)", showsProgress: false)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var remoteDesktop: some View {
@@ -36,6 +37,7 @@ struct ExternalRemoteDisplayView: View {
                           acceptsHardwareKeyboardInput: false,
                           acceptsPointerInput: false)
             .id(session.displaySelection.id)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea()
     }
 

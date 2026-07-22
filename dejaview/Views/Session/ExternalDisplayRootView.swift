@@ -11,8 +11,11 @@ struct ExternalDisplayRootView: View {
                let session = coordinator.activeSession {
                 ExternalRemoteDisplayView(session: session,
                                           sessionTitle: coordinator.sessionTitle)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea()
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .preferredColorScheme(.dark)
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)

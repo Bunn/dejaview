@@ -14,12 +14,25 @@ final class ExternalDisplaySceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
 
         let window = UIWindow(windowScene: windowScene)
+        window.frame = windowScene.effectiveGeometry.coordinateSpace.bounds
         window.backgroundColor = .black
         window.rootViewController = UIHostingController(
             rootView: ExternalDisplayRootView(coordinator: .shared)
         )
         self.window = window
+        AppLog.externalDisplay.info("Configured external display at \(String(describing: window.frame), privacy: .public)")
         ExternalDisplayCoordinator.shared.attachExternalWindow(window)
+    }
+
+    func windowScene(_ windowScene: UIWindowScene,
+                     didUpdateEffectiveGeometry previousEffectiveGeometry: UIWindowScene.Geometry) {
+        guard let window else { return }
+
+        let screenBounds = windowScene.effectiveGeometry.coordinateSpace.bounds
+        guard window.frame != screenBounds else { return }
+
+        window.frame = screenBounds
+        window.rootViewController?.view.setNeedsLayout()
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {

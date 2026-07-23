@@ -4,35 +4,69 @@ import SwiftUI
 /// to a remote session without keeping a local text buffer.
 struct RemoteSoftwareKeyboardInput: UIViewRepresentable {
     let focusRequest: Int
+    @Binding var isFocused: Bool
     let onInsertText: (String) -> Void
     let onDeleteBackward: () -> Void
     let onReturn: () -> Void
 
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isFocused: $isFocused)
+    }
+
     func makeUIView(context: Context) -> InputView {
         let inputView = InputView()
+        inputView.onFocusChange = context.coordinator.setFocus(_:)
         update(inputView)
         return inputView
     }
 
     func updateUIView(_ inputView: InputView, context: Context) {
+        context.coordinator.isFocused = $isFocused
         update(inputView)
     }
 
-    static func dismantleUIView(_ inputView: InputView, coordinator: Void) {
+    static func dismantleUIView(_ inputView: InputView, coordinator: Coordinator) {
         inputView.deactivate()
+        coordinator.cancelPendingFocusUpdate()
     }
 
     private func update(_ inputView: InputView) {
         inputView.onInsertText = onInsertText
         inputView.onDeleteBackward = onDeleteBackward
         inputView.onReturn = onReturn
-        inputView.requestFocus(focusRequest)
+        inputView.setFocus(isFocused, request: focusRequest)
+    }
+
+    @MainActor
+    final class Coordinator {
+        var isFocused: Binding<Bool>
+        private var focusUpdateTask: Task<Void, Never>?
+
+        init(isFocused: Binding<Bool>) {
+            self.isFocused = isFocused
+        }
+
+        func setFocus(_ focused: Bool) {
+            focusUpdateTask?.cancel()
+            focusUpdateTask = Task { @MainActor [weak self] in
+                await Task.yield()
+                guard let self, !Task.isCancelled else { return }
+                guard self.isFocused.wrappedValue != focused else { return }
+                self.isFocused.wrappedValue = focused
+            }
+        }
+
+        func cancelPendingFocusUpdate() {
+            focusUpdateTask?.cancel()
+            focusUpdateTask = nil
+        }
     }
 
     final class InputView: UIView, UIKeyInput {
         var onInsertText: (String) -> Void = { _ in }
         var onDeleteBackward: () -> Void = {}
         var onReturn: () -> Void = {}
+        var onFocusChange: (Bool) -> Void = { _ in }
 
         var autocapitalizationType: UITextAutocapitalizationType = .none
         var autocorrectionType: UITextAutocorrectionType = .no
@@ -53,6 +87,8 @@ struct RemoteSoftwareKeyboardInput: UIViewRepresentable {
 
         private var latestFocusRequest: Int?
         private var isActive = true
+        private var wantsFocus = false
+        private var lastReportedFocus: Bool?
 
         override init(frame: CGRect) {
             super.init(frame: frame)
@@ -74,23 +110,54 @@ struct RemoteSoftwareKeyboardInput: UIViewRepresentable {
             if window != nil {
                 focusWhenPossible()
             } else if isFirstResponder {
-                resignFirstResponder()
+                _ = resignFirstResponder()
             }
         }
 
-        func requestFocus(_ request: Int) {
-            guard latestFocusRequest != request else { return }
+        override func becomeFirstResponder() -> Bool {
+            let becameFirstResponder = super.becomeFirstResponder()
+
+            if becameFirstResponder {
+                wantsFocus = true
+                reportFocus(true)
+            }
+
+            return becameFirstResponder
+        }
+
+        override func resignFirstResponder() -> Bool {
+            wantsFocus = false
+            let resignedFirstResponder = super.resignFirstResponder()
+
+            if resignedFirstResponder {
+                reportFocus(false)
+            }
+
+            return resignedFirstResponder
+        }
+
+        func setFocus(_ focused: Bool, request: Int) {
+            let focusRequestChanged = latestFocusRequest != request
 
             latestFocusRequest = request
-            focusWhenPossible()
+            wantsFocus = focused
+
+            if focused {
+                if focusRequestChanged || !isFirstResponder {
+                    focusWhenPossible()
+                }
+            } else if isFirstResponder {
+                _ = resignFirstResponder()
+            }
         }
 
         func deactivate() {
             isActive = false
             latestFocusRequest = nil
+            wantsFocus = false
 
             if isFirstResponder {
-                resignFirstResponder()
+                _ = resignFirstResponder()
             }
         }
 
@@ -125,13 +192,24 @@ struct RemoteSoftwareKeyboardInput: UIViewRepresentable {
         }
 
         private func focusWhenPossible() {
-            guard isActive, window != nil, !isFirstResponder else { return }
+            guard isActive, wantsFocus, window != nil, !isFirstResponder else { return }
 
             Task { @MainActor [weak self] in
                 await Task.yield()
-                guard let self, self.isActive, self.window != nil else { return }
-                self.becomeFirstResponder()
+                guard let self,
+                      self.isActive,
+                      self.wantsFocus,
+                      self.window != nil else {
+                    return
+                }
+                _ = self.becomeFirstResponder()
             }
+        }
+
+        private func reportFocus(_ focused: Bool) {
+            guard lastReportedFocus != focused else { return }
+            lastReportedFocus = focused
+            onFocusChange(focused)
         }
     }
 }

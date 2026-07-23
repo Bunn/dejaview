@@ -7,6 +7,7 @@ struct ExternalSessionControllerView<Session: RemoteSessionControlling>: View {
     let session: Session
     let sessionTitle: String
     @Binding var heldModifierKeys: Set<RemoteModifierKey>
+    @Binding var isKeyboardFocused: Bool
     let stopControllerMode: () -> Void
 
     @State private var keyboardFocusRequest = 0
@@ -30,7 +31,6 @@ struct ExternalSessionControllerView<Session: RemoteSessionControlling>: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, verticalSizeClass == .compact ? 56 : 74)
-        .padding(.bottom, verticalSizeClass == .compact ? 56 : 76)
         .background {
             LinearGradient(colors: [.black, Color(uiColor: .secondarySystemBackground)],
                            startPoint: .top,
@@ -39,6 +39,7 @@ struct ExternalSessionControllerView<Session: RemoteSessionControlling>: View {
         }
         .overlay(alignment: .bottom) {
             RemoteSoftwareKeyboardInput(focusRequest: keyboardFocusRequest,
+                                        isFocused: $isKeyboardFocused,
                                         onInsertText: sendText,
                                         onDeleteBackward: deleteBackward,
                                         onReturn: sendReturn)
@@ -47,6 +48,7 @@ struct ExternalSessionControllerView<Session: RemoteSessionControlling>: View {
         }
         .task {
             await Task.yield()
+            isKeyboardFocused = true
             requestKeyboardFocus()
         }
     }
@@ -140,6 +142,7 @@ struct ExternalSessionControllerView<Session: RemoteSessionControlling>: View {
     }
 
     private func requestKeyboardFocus() {
+        guard isKeyboardFocused else { return }
         keyboardFocusRequest += 1
     }
 }

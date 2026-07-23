@@ -23,6 +23,7 @@ struct SessionView<Session: RemoteSessionControlling>: View {
     @State private var networkPathObserver = NetworkPathObserver()
     @State private var externalDisplayCoordinator = ExternalDisplayCoordinator.shared
     @State private var inputFocused = false
+    @State private var externalKeyboardFocused = true
 
     private let freeSessionDurationInterval: TimeInterval = 60
 
@@ -71,7 +72,7 @@ struct SessionView<Session: RemoteSessionControlling>: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            if session.status == .connected && !showsInputBar {
+            if session.status == .connected && !showsInputBar && !isExternalControllerActive {
                 HStack(spacing: 10) {
                     if session.displayOptions.count > 1 {
                         SessionDisplayMenu(session: session)
@@ -182,6 +183,7 @@ struct SessionView<Session: RemoteSessionControlling>: View {
                 ExternalSessionControllerView(session: session,
                                               sessionTitle: sessionTitle,
                                               heldModifierKeys: $heldModifierKeys,
+                                              isKeyboardFocused: $externalKeyboardFocused,
                                               stopControllerMode: deactivateExternalControllerIfNeeded)
             } else {
                 SessionRemoteContent(session: session,
@@ -237,7 +239,14 @@ struct SessionView<Session: RemoteSessionControlling>: View {
 
     private var controlPill: some View {
         HStack(spacing: 2) {
-            if !isExternalControllerActive {
+            if isExternalControllerActive {
+                Button(externalKeyboardFocused ? "Hide Software Keyboard" : "Show Software Keyboard",
+                       systemImage: externalKeyboardFocused ? "keyboard.chevron.compact.down" : "keyboard",
+                       action: toggleExternalKeyboard)
+                    .labelStyle(.iconOnly)
+                    .padding(12)
+                    .contentShape(Rectangle())
+            } else {
                 Button("Toggle Software Keyboard", systemImage: "keyboard", action: toggleInputBar)
                     .labelStyle(.iconOnly)
                     .padding(12)
@@ -420,6 +429,11 @@ struct SessionView<Session: RemoteSessionControlling>: View {
 
         AppLog.ui.info("Software input bar visibility changed; visible=\(self.showsInputBar, privacy: .public)")
         inputFocused = showsInputBar
+    }
+
+    private func toggleExternalKeyboard() {
+        externalKeyboardFocused.toggle()
+        AppLog.ui.info("External controller keyboard visibility changed; visible=\(self.externalKeyboardFocused, privacy: .public)")
     }
 
     private func closeSession() {
